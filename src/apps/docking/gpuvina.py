@@ -251,9 +251,9 @@ class QuickVina2GPU(object):
     def _write_config_file(self):
 
         config = []
-        config.append(f"receptor = {self.receptor}")
-        config.append(f"ligand_directory = {self.input_dir}")
-        config.append(f"opencl_binary_path = /groups/cherkasvgrp/Vina-GPU-2.1/QuickVina2-GPU-2.1/") #{VinaConfig.opencl_binary_path}")
+        config.append(f"receptor = {os.path.abspath(self.receptor)}")
+        config.append(f"ligand_directory = {os.path.abspath(self.input_dir)}")
+        config.append(f"opencl_binary_path = {os.path.dirname(self.vina_path)}/")
         config.append(f"center_x = {self.center_x}")
         config.append(f"center_y = {self.center_y}")
         config.append(f"center_z = {self.center_z}")
@@ -299,7 +299,9 @@ class QuickVina2GPU(object):
     def _run_vina(self):
 
         result = subprocess.run(
-            [self.vina_path, "--config", os.path.join(self.input_dir, "../config.txt")], capture_output=True, text=True
+            [self.vina_path, "--config", os.path.join(self.input_dir, "../config.txt")],
+            capture_output=True, text=True,
+            cwd=os.path.dirname(self.vina_path),
         )
         if self.print_time:
             print(result.stdout.split("\n")[-2])
