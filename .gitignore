@@ -1,3 +1,18 @@
-./AGFN_logs
-./saved_models
-./.DS_Store
+AGFN_logs/
+saved_models/
+.DS_Store
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Runtime artifacts
+wandb/
+data/gfn_samples/
+
+# Editable pip installs (managed via requirements_dev.txt)
+src/autodocktools-py3/
+
+# Jupyter
+.ipynb_checkpoints/
