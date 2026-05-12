@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import tempfile
 from typing import List, Tuple
@@ -94,6 +95,48 @@ def parse_affinty_from_pdbqt(pdbqt_file: str) -> float:
         if "REMARK VINA RESULT" in line:
             return float(line.split()[3])
     return None
+
+
+# AutoDock atom types accepted by QuickVina2-GPU's parser. Meeko's macrocycle
+# splitter emits pseudo-atoms (CG0/CG1/.../G0/G1/...) that fall outside this
+# set; Vina-GPU aborts the entire batch on the first such line, so we drop
+# any ligand file containing one before invoking the binary.
+_VALID_AD_ATOM_TYPES = frozenset({
+    "H", "HD", "HS",
+    "C", "A",
+    "N", "NA", "NS",
+    "O", "OA", "OS",
+    "F",
+    "Mg", "MG",
+    "P",
+    "S", "SA",
+    "Cl", "CL", "Ca", "CA", "Mn", "MN", "Fe", "FE", "Zn", "ZN", "Br", "BR", "I",
+    "Si", "SI", "B",
+})
+
+
+def _pdbqt_atom_types_valid(pdbqt_path: str) -> bool:
+    try:
+        with open(pdbqt_path, "r") as f:
+            for line in f:
+                if line.startswith(("ATOM", "HETATM")):
+                    tokens = line.split()
+                    if not tokens or tokens[-1] not in _VALID_AD_ATOM_TYPES:
+                        return False
+    except OSError:
+        return False
+    return True
+
+
+def _clear_dir_contents(path: str) -> None:
+    if not os.path.isdir(path):
+        return
+    for name in os.listdir(path):
+        full = os.path.join(path, name)
+        if os.path.isdir(full) and not os.path.islink(full):
+            shutil.rmtree(full)
+        else:
+            os.remove(full)
 
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -269,20 +312,36 @@ class QuickVina2GPU(object):
 
     def _write_pdbqt_files(self, smiles: List[str]):
 
+        # Wipe stale ligands/outputs so a prior batch's bad files (e.g. meeko
+        # macrocycle pseudo-atoms that Vina-GPU rejects) can't poison this run.
+        _clear_dir_contents(self.input_dir)
+        _clear_dir_contents(self.out_dir)
+
         # Convert smiles to mols
         mols = [smile_to_conf(smile, n_tries=1) for smile in tqdm(smiles, desc="Smiles conformation calculation")]
 
-        
-        # Remove None
-        # mols = [mol for mol in mols if mol is not None]
-
-        # Write pdbqt files
+        dropped_invalid = 0
         for i, mol in enumerate(mols):
+            if mol is None:
+                continue
             pdbqt_file = os.path.join(self.input_dir, f"input_{i}.pdbqt")
             try:
                 mol_to_pdbqt(mol, pdbqt_file)
             except Exception as e:
                 print(f"Failed to write pdbqt file: {e}")
+                continue
+
+            # Vina-GPU treats `ligand_directory` as one indivisible batch and
+            # aborts on the first parse error, so drop any file with atom
+            # types the parser won't accept rather than letting it nuke the
+            # whole batch. The missing input falls through to affinity=0.0
+            # in _parse_results, matching the "conformer failed" path.
+            if not _pdbqt_atom_types_valid(pdbqt_file):
+                os.remove(pdbqt_file)
+                dropped_invalid += 1
+
+        if dropped_invalid:
+            print(f"Dropped {dropped_invalid}/{len(mols)} ligands with non-AutoDock atom types")
 
     def _teardown(self):
         # Remove input files
