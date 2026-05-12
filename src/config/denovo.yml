@@ -5,8 +5,8 @@ finetuning:
   # seed_scaffold: null #"CNc1nc(OCc2cncn2C)cnc1C(N)=O"
   task: 'QedxSaxDock' 
   task_possible_range: [-20,0] 
-  target_name: "5ht1b" #"braf" #"fa7" #"parp1" # "jak2" #
-  vina_path: "/groups/cherkasvgrp/Vina-GPU-2.1/QuickVina2-GPU-2.1/QuickVina2-GPU-2-1" #"path/to/QuickVina2-GPU-2.1/" # E.g. "/groups/mygroup/Vina-GPU-2.1/QuickVina2-GPU-2.1/QuickVina2-GPU-2-1"
+  target_name: "braf" #"braf" #"fa7" #"parp1" # "jak2" #
+  vina_path: "/home/aid/miniconda3/envs/agfn/opt/Vina-GPU-2.1/QuickVina2-GPU-2.1/QuickVina2-GPU-2-1"
   gfn_samples_path: "./data/gfn_samples"
   saved_model_path: "./saved_models/pretrained/decent-butterfly-1_110000.pt"
   target_grid:
