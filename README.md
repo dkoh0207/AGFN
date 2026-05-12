@@ -15,12 +15,16 @@ This repository provides code and configurations to replicate the pretraining, f
 ## ⚙️ Installation
 
 ```bash
-conda create -n agfn python=3.8.20
+conda create -n agfn python=3.12 -y
 conda activate agfn
 cd agfn
 pip install -r requirements_dev.txt
 pip install -e .
 ```
+
+> ℹ️ The dependency stack targets **PyTorch 2.8.0 + CUDA 12.9 wheels** and supports
+> Blackwell GPUs (RTX 50 series, B100/B200, compute capability `sm_120`). Older
+> hardware (Ampere/Hopper) remains supported by the same wheels.
 
 ## 🔬 Pretraining
 
@@ -37,7 +41,7 @@ This uses the default training configuration. To modify default settings update 
 ⚠️ Note:
 By default, the script utilizes **all available GPUs** on the node. To restrict the number of GPUs, update the `world_size` parameter in the `if __name__ == '__main__'` block of `driver.py`.
 
-The code has been tested on up to **8 NVIDIA A100 GPUs**.
+The code has been tested on up to **8 NVIDIA A100 GPUs** and verified on a **single NVIDIA RTX 5090** (Blackwell, `sm_120`) with PyTorch 2.8.0+cu129.
 
 Model checkpoints will be saved to: `./AGFN_logs/[wandb_run_name]/*.pt`. All configurable pretraining hyperparameters are located in: `.agfn/config/pretrain.yml`
 

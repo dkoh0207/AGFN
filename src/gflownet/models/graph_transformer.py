@@ -69,7 +69,7 @@ class GraphTransformer(nn.Module):
             sum(
                 [
                     [
-                        gnn.GENConv(num_emb, num_emb, num_layers=1, aggr="add", norm=None),
+                        gnn.GENConv(num_emb, num_emb, num_layers=1, aggr="add", norm=None, bias=True),
                         gnn.TransformerConv(num_emb * 2, num_emb, edge_dim=num_emb, heads=num_heads),
                         nn.Linear(num_heads * num_emb, num_emb),
                         gnn.LayerNorm(num_emb, affine=False),

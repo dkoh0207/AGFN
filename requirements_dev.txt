@@ -1,11 +1,10 @@
-# -e git+https://github.com/Valdes-Tresanco-MS/AutoDockTools_py3
+# AGFN dev requirements — PyTorch + PyG stack for Blackwell GPUs (sm_120)
+# Verified on NVIDIA RTX 5090 (CUDA 13 driver) with PyTorch 2.8.0+cu129.
 -e git+https://github.com/Valdes-Tresanco-MS/AutoDockTools_py3#egg=AutoDockTools_py3
-torch==1.10.0+cu111
--f https://download.pytorch.org/whl/torch_stable.html
-torch-cluster==1.6.0
--f https://pytorch-geometric.com/whl/torch-1.10.0+cu111.html
-torch-geometric==2.0.3
-torch-scatter==2.0.9
--f https://data.pyg.org/whl/torch-1.10.0+cu111.html
-torch-sparse==0.6.13
--f https://data.pyg.org/whl/torch-1.10.0+cu111.html 
+--extra-index-url https://download.pytorch.org/whl/cu129
+torch==2.8.0
+-f https://data.pyg.org/whl/torch-2.8.0+cu129.html
+torch-scatter
+torch-cluster
+torch-sparse
+torch-geometric>=2.5

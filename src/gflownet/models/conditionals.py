@@ -54,7 +54,7 @@ class ConditionalInfo():
                 # print(f'{property} {cond}')
                 encoding.append(thermometer(torch.tensor(cond), self.num_thermometer_dim,
                             lower_bound, upper_bound))
-        encoding = torch.cat(encoding, dim=1) #use torch.cat for torch v1.10, for newer versions use torch.concatenate
+        encoding = torch.cat(encoding, dim=1)
         return encoding
 
     def compute_cond_info_forward(self, n_trajs, ft_conditionals_dict =None):
