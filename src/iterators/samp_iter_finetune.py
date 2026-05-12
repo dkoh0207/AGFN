@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader, IterableDataset
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
 from utils.helpers import DiversityFilter
+from utils.top_k_tracker import TopKTracker
 from agfn.backtraj import ReverseFineTune
 import pickle
 import numpy as np
@@ -66,7 +67,12 @@ class FTSampling_Iterator(IterableDataset):
             'MicroClearance': self._reward_micro_clearance,
             'HepatocyteClearance': self._reward_hepatocyte_clearance
         }
-        
+
+        self.top_k_tracker = TopKTracker(ks=(10, 100))
+        self.top_k_path = f"{self.hps['log_dir']}/top_k_mols.pt"
+        self.top_k_tracker.load(self.top_k_path)
+        self.iter_counter = 0
+
     def _reward_caco2(self, x):
         return self.reward.caco2(self.Y_scaler, self.task_model, x)
 
@@ -258,6 +264,17 @@ class FTSampling_Iterator(IterableDataset):
                             self.div_fil.update(smiles_list)
                             #penalize rewards for frequently generated scaffolds
                             flat_rewards = self.div_fil.penalize_reward(smiles_list,flat_rewards)
+
+                        rewards_for_topk = flat_rewards.detach().cpu().numpy().reshape(-1).tolist()
+                        affinities_for_topk = np.asarray(true_task_score).reshape(-1).tolist()
+                        self.top_k_tracker.add_batch(
+                            smiles_list, rewards_for_topk,
+                            affinities=affinities_for_topk,
+                            iteration=self.iter_counter,
+                        )
+                        if self.iter_counter % self.hps.get('checkpoint_every', 10) == 0:
+                            self.top_k_tracker.save(self.top_k_path)
+                        self.iter_counter += 1
 
                         #Ensure reward is set to 0 for invalid trajectories (molecules)
                         pred_reward = torch.zeros((len(online_trajs), flat_rewards.shape[1]))
