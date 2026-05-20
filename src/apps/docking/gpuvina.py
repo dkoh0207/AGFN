@@ -239,7 +239,7 @@ class QuickVina2GPU(object):
         save_confs: bool = False,
         reward_scale_max: float = -1.0,
         reward_scale_min: float = -10.0,
-        thread: int = 8000, #1000,
+        thread: int = 2000, #1000,
         print_time: bool = False,
         print_logs: bool = False,
     ):
@@ -369,6 +369,9 @@ class QuickVina2GPU(object):
 
         if result.returncode != 0:
             print(f"Vina failed with return code {result.returncode}")
+            print("--- Vina stdout ---")
+            print(result.stdout)
+            print("--- Vina stderr ---")
             print(result.stderr)
             return False
 

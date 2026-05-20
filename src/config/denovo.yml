@@ -76,7 +76,7 @@ finetuning:
   atomenv_dictionary: "./data/atomenv_counts_ZINC_radius2_763K.pkl"
   sampling_batch_size: 64 #512 #1024 #512
   training_batch_size: 16 #64 #64 #128 #64
-  learning_rate: 1.e-6
+  learning_rate: 1.e-7
   num_workers: 1 #2 #4 # 8
   num_emb: 128
   num_layers: 15

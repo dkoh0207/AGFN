@@ -10,6 +10,7 @@ __pycache__/
 # Runtime artifacts
 wandb/
 data/gfn_samples/
+*.log
 
 # Editable pip installs (managed via requirements_dev.txt)
 src/autodocktools-py3/
