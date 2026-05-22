@@ -2,7 +2,7 @@
 
 Maintains two bounded heaps in parallel:
   - top_by_reward: largest rewards (GFN training signal)
-  - top_by_affinity: most-negative Vina docking scores (kcal/mol)
+  - top_by_affinity: most-negative Uni-Dock docking scores (kcal/mol)
 
 Stored entries are SMILES-only (no RDKit Mol objects) for portability.
 Persisted via torch.save to keep the API consistent with other checkpoint

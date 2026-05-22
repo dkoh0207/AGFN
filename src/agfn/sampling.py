@@ -248,7 +248,7 @@ class Sampler():
 #     traj_sampler = Trajectory_Sampling(ft_sampler)
 
 #     sampled_mols, sampled_smiles = ft_sampler.sample_smiles(traj_sampler, n_trajs)
-#     minimized_doc_res = dock_with_min_score(VINA_PATH, target, sampled_smiles, num_trials=1)
+#     minimized_doc_res = dock_with_min_score(target, sampled_smiles, num_trials=1)
 
 #     below_thresh_count = np.sum(np.array(minimized_doc_res[1]) < hit_thr)
 #     overall_rew = get_overall_reward(minimized_doc_res[0], minimized_doc_res[2])

@@ -12,7 +12,6 @@ networkx>=3.2
 # Chem / molecular
 rdkit>=2024.3
 datamol>=0.12
-meeko>=0.5
 useful_rdkit_utils>=0.3
 # PyTDC is intentionally excluded here — its declared deps pin pandas==2.1.4,
 # descriptastorus==2.5.0.23, rdkit-pypi, and cellxgene-census, which cannot

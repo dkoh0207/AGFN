@@ -5,7 +5,7 @@ finetuning:
   # seed_scaffold: null #"CNc1nc(OCc2cncn2C)cnc1C(N)=O"
   task: 'QedxSaxDock' 
   task_possible_range: [-20,0] 
-  target_name: "braf" #"braf" #"fa7" #"parp1" # "jak2" #
+  target_name: "braf"
   unidock_search_mode: "fast"  # fast | balance | detail
   unidock_num_workers: 1       # >1 enables a multiprocessing pool for ETKDG conformer gen
   gfn_samples_path: "./data/gfn_samples"

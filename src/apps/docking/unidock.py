@@ -1,25 +1,20 @@
 """UniDock docking backend for AGFN.
 
-A drop-in alternative to the QuickVina2-GPU backend (`gpuvina.py`). It runs entirely
-**inside the calling Python session** via the ``unidock_tools`` API (no separate Python
-interpreter, no on-disk mol hand-off) — only the compiled ``unidock`` binary is launched as a
-child process internally by ``unidock_tools``, which is intrinsic to the engine.
+The docking engine for de novo finetuning (``task: QedxSaxDock``). It runs entirely **inside the
+calling Python session** via the ``unidock_tools`` API (no separate Python interpreter, no
+on-disk mol hand-off) — only the compiled ``unidock`` binary is launched as a child process
+internally by ``unidock_tools``, which is intrinsic to the engine.
 
 Adapted from the reference implementation in RxnFlow
-(``src/rxnflow/tasks/utils/unidock.py``), with two AGFN-specific changes:
+(``src/rxnflow/tasks/utils/unidock.py``), with one AGFN-specific change: AGFN already ships
+``.pdbqt`` receptors and explicit box centers/sizes (``target_grid`` in the config), so we feed
+those straight to ``UniDock`` and skip the pdb->pdbqt conversion and pybel-based pocket-center
+detection that RxnFlow performs.
 
-* The ``unidock`` binary lives in a dedicated, self-contained conda env (its shared libs are
-  resolved via baked ``RPATH``), so we only need it on ``PATH``. We prepend that env's ``bin``
-  to ``os.environ['PATH']`` in-process; no ``LD_LIBRARY_PATH`` edits and no activation hooks.
-* AGFN already ships ``.pdbqt`` receptors and explicit box centers/sizes (``target_grid`` in
-  the config), so we feed those straight to ``UniDock`` and skip the pdb->pdbqt conversion and
-  pybel-based pocket-center detection that RxnFlow performs.
-
-``UniDockGPU.calculate_rewards`` mirrors ``QuickVina2GPU.calculate_rewards`` exactly (same
-return tuple and the same affinity->reward scaling) so the downstream reward math is unchanged.
+The ``unidock`` binary is installed in the same conda env as the training stack (the
+``agfn-no-vina`` env), so it resolves from ``$CONDA_PREFIX/bin`` with no PATH manipulation.
 """
 
-import os
 import tempfile
 import multiprocessing
 from pathlib import Path
@@ -28,22 +23,6 @@ from typing import List, Optional, Tuple
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem.rdDistGeom import EmbedMolecule, srETKDGv3
-
-# Default location of the dedicated, self-contained UniDock engine env. Overridable via the
-# UNIDOCK_BIN_DIR env var or the `unidock_bin_dir` constructor argument.
-_DEFAULT_UNIDOCK_BIN_DIR = "/home/aid/miniconda3/envs/unidock/bin"
-
-
-def ensure_unidock_on_path(bin_dir: Optional[str] = None) -> None:
-    """Prepend the UniDock engine env's bin dir to PATH (in-process only).
-
-    The `unidock` binary resolves its own shared libraries through a baked RPATH, so making it
-    discoverable on PATH is sufficient; we deliberately do not touch LD_LIBRARY_PATH.
-    """
-    bin_dir = bin_dir or os.environ.get("UNIDOCK_BIN_DIR", _DEFAULT_UNIDOCK_BIN_DIR)
-    if bin_dir and os.path.isdir(bin_dir):
-        if bin_dir not in os.environ.get("PATH", "").split(os.pathsep):
-            os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
 
 
 def run_etkdg_func(args: Tuple[str, Path]) -> Optional[Path]:
@@ -86,11 +65,9 @@ def dock_smiles(
     Failures (bad SMILES, failed embedding, missing output) yield ``0.0``. ETKDG runs as an
     in-process loop by default; ``num_workers > 1`` opts into a multiprocessing pool.
     """
-    # Imported here so importing this module never hard-requires unidock_tools (the Vina
-    # backend can still be used in an env without it).
+    # Imported here (lazily) so importing this module stays cheap and any unidock_tools issue
+    # surfaces at dock time with a clear traceback rather than at import.
     from unidock_tools.application.unidock_pipeline import UniDock
-
-    ensure_unidock_on_path()
 
     num_mols = len(smiles_list)
     receptor_path = Path(receptor)
@@ -145,7 +122,7 @@ def dock_smiles(
 
 
 class UniDockGPU:
-    """UniDock backend with the same public surface as ``QuickVina2GPU``.
+    """UniDock docking backend.
 
     Construct from a ``target_grid`` entry, e.g.::
 
@@ -169,7 +146,6 @@ class UniDockGPU:
         reward_scale_min: float = -10.0,
         num_workers: int = 1,
         seed: int = 1,
-        unidock_bin_dir: Optional[str] = None,
     ):
         if receptor is None:
             raise ValueError("UniDockGPU requires a `receptor` pdbqt/pdb path")
@@ -182,14 +158,13 @@ class UniDockGPU:
         self.reward_scale_min = reward_scale_min
         self.num_workers = num_workers
         self.seed = seed
-        ensure_unidock_on_path(unidock_bin_dir)
 
     def calculate_rewards(self, smiles: List[str]) -> Tuple[List[str], List[float], List[float]]:
         """Dock ``smiles`` and return ``(smiles, affinities, rewards)``.
 
         Affinities are clamped to <= 0 (positive/failed scores -> 0, as in RxnFlow), then scaled
-        with the identical formula used by ``QuickVina2GPU.calculate_rewards`` so reward
-        magnitudes match the Vina backend.
+        to a reward via ``(affinity + reward_scale_min) / (reward_scale_min + reward_scale_max)
+        - 1`` (defaults map an affinity of -10 -> reward 0 and -1 -> reward -1).
         """
         affinities = dock_smiles(
             smiles,
@@ -211,7 +186,3 @@ class UniDockGPU:
         )
 
         return list(smiles), list(affinities), list(rewards)
-
-
-# Make the engine discoverable as soon as this module is imported.
-ensure_unidock_on_path()

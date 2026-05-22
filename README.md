@@ -159,7 +159,32 @@ python ./src/agfn/metrics.py [finetuned_model_path] --ntrajs [#samples] --do_hyp
 
 ### 1. De Novo Design of Target-Specific Binders with Molecular Docking
 
-This pipeline enables the generation of de novo molecules for a target protein, with molecular docking evaluation using **QuickVina2** as rewards. For the installation of QuickVina2, follow instructions [here](https://github.com/DeltaGroupNJUPT/Vina-GPU-2.1)
+This pipeline enables the generation of de novo molecules for a target protein, with molecular docking evaluation using **[Uni-Dock](https://github.com/dptech-corp/Uni-Dock)** (GPU-accelerated) as rewards. Docking runs **in-process** in the training session via the `unidock_tools` API.
+
+Docking needs the `unidock` engine available in your environment. Set up a dedicated env cloned from your working AGFN env, so the engine lives in-env and training never reaches into a separate env:
+
+```bash
+# 1. Clone the working env (keeps the original AGFN env untouched).
+conda create --name agfn-no-vina --clone agfn
+
+# 2. Install ONLY Uni-Dock's native libs (these are pip-stack-safe). Pinning
+#    cuda-version=12.9 matches the cuda129 unidock build below.
+conda install -n agfn-no-vina -c conda-forge \
+  "cuda-version=12.9" "libcurand>=10.3.10.19,<11" \
+  "libboost>=1.86,<1.87" "libboost-devel>=1.86" "libboost-headers>=1.86" "icu>=78"
+
+# 3. Install just the unidock BINARY with --no-deps. The conda `unidock` package
+#    bundles a Python wrapper that depends on numpy/pandas/rdkit/openmm; --no-deps
+#    avoids conda overwriting this env's pip-installed torch/rdkit/numpy stack.
+conda install -n agfn-no-vina -c conda-forge "unidock=1.1.3=cuda129_h10d1193_2" --no-deps
+
+# 4. (Re)install the lean unidock_tools 1.1.3 wrapper that drives the binary.
+#    Tag 1.1.2 avoids the openmm import the bundled 1.1.3 wrapper pulls in.
+/path/to/envs/agfn-no-vina/bin/pip install --force-reinstall --no-deps \
+  "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools"
+```
+
+`openbabel-wheel` and the `unidock_tools` wrapper are already part of the AGFN requirements (inherited by the clone). With the env activated, `unidock` resolves from `$CONDA_PREFIX/bin` — no PATH edits or second env. Run the docking pipeline from the `agfn-no-vina` env.
 
 ### 🔧 Configuration
 
@@ -174,16 +199,18 @@ Update the following fields in `./config/denovo.yml`:
   - `"braf"`
 - **`saved_model_path`**:
   Path to the pretrained AGFN prior model.
-- **`vina_path`**:
-  Path to your local installation of QuickVina2.
+- **`unidock_search_mode`**:
+  Docking exhaustiveness: `"fast"` (default), `"balance"`, or `"detail"`.
+- **`unidock_num_workers`**:
+  Number of worker processes for ETKDG 3D conformer generation. `1` runs in-process; `>1` uses a multiprocessing pool.
 - For a **custom target**, create an entry under the `target_grid` field.`target_grid` is a dictionary where:
 
   - The **key** is your custom target name.
-  - The **value** is another dictionary with QuickVina docking parameters.
+  - The **value** is another dictionary with the docking box parameters (`receptor`, `center_x/y/z`, `size_x/y/z`).
 
   🔍 Refer to existing targets in `denovo.yml` for formatting examples.
 
-  📌 Additionally, place the prepared receptor file for the custom target at: `./data/docking/\custom\_target.pdbqt` You can prepare `.pdbqt` files using **AutoDockTools**. For example, see: [prepare_receptor4.py](https://github.com/sahrendt0/Scripts/blob/master/docking_scripts/prepare_receptor4.py)
+  📌 Additionally, place the prepared receptor file for the custom target at: `./data/docking/\custom\_target.pdbqt`. Uni-Dock takes `.pdbqt` receptors directly; convert a `.pdb` with Uni-Dock's helper, e.g. `unidocktools proteinprep -r receptor.pdb -o receptor.pdbqt`.
 
 Other hyperparameters can be left at their default values or customized based on your use case.
 
