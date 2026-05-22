@@ -8,7 +8,7 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from gflownet.algo.tb_loss import compute_batch_losses
-import wandb
+from utils.csv_logger import CSVLogger, generate_run_name, save_run_config
 import numpy as np
 from rdkit.Chem import QED
 from rdkit import Chem
@@ -18,7 +18,6 @@ from iterators.samp_iter_inmem import build_train_loader
 # from samp_iter.samp_iter_inmem import build_train_loader
 
 # os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"
-wandb.login()
 
 def do_validation(reward, online_mols, offline_smiles):
     qed_scores_on = np.array([QED.qed(mol) for mol in online_mols])
@@ -29,17 +28,18 @@ def do_validation(reward, online_mols, offline_smiles):
 
 
 
-def train(hps, pretrainer, mixer, train_loader, rank, wandb_config, wandb_project_name, wandb_mode="disabled",
+def train(hps, pretrainer, mixer, train_loader, rank, run_config, run_name="pretrain",
           world_size=1):
-    with wandb.init(project = wandb_project_name, config = wandb_config, mode = wandb_mode,
-                    group='ddp'):
-        print(wandb.run.id, wandb.run.name)
-        if not os.path.exists(hps["log_dir"]+f'/{wandb.run.name}/'):
-            os.makedirs(hps["log_dir"]+f'/{wandb.run.name}/')
-            tmppath = hps["log_dir"]+f'/{wandb.run.name}/'
+    run_name = generate_run_name(run_name)
+    save_run_config(run_config, hps["log_dir"] + f'/{run_name}/config.json')
+    with CSVLogger(hps["log_dir"] + f'/{run_name}/metrics.csv') as _csv_logger:
+        print('Run: ', run_name)
+        if not os.path.exists(hps["log_dir"]+f'/{run_name}/'):
+            os.makedirs(hps["log_dir"]+f'/{run_name}/')
+            tmppath = hps["log_dir"]+f'/{run_name}/'
             print(f'successfully made logging dir {tmppath}')
         
-        hps["log_dir"] = hps["log_dir"]+f'/{wandb.run.name}/'
+        hps["log_dir"] = hps["log_dir"]+f'/{run_name}/'
 
         cumtime = 0
         tstart = t0 = None # time.time()
@@ -103,9 +103,9 @@ def train(hps, pretrainer, mixer, train_loader, rank, wandb_config, wandb_projec
                     for i, k in enumerate(keys):
                         info_vals[k] = all_info_vals[i].item() / world_size
                     if rank == 0:
-                        wandb.log(info_vals)
+                        _csv_logger.log(info_vals)
                 else:
-                    wandb.log(info_vals)
+                    _csv_logger.log(info_vals)
                 t0 = time.time()
                 step_time = t0 - t1
                 cumtime += step_time
@@ -119,7 +119,7 @@ def train(hps, pretrainer, mixer, train_loader, rank, wandb_config, wandb_projec
                 # if (it > 0 )and (it %  hps['checkpoint_every'] == 0) and (pretrainer.rank==0):
                 if (it %  hps['checkpoint_every'] == 0) and (pretrainer.rank==0):
                     #TODO: update _save_state() to save optimizer's state as well
-                    pretrainer.gfn_trainer._save_state(it,wandb.run.name)
+                    pretrainer.gfn_trainer._save_state(it,run_name)
             except Exception as e:
                 print (e)
                 raise(e)
@@ -161,7 +161,6 @@ def main(rank, world_size):
     hps.update(conditional_range_dict)
 
 
-    wandb_project_name = "GFN_Pretrain"
     if hps['load_saved_model']:
         pretrainer = Pretrainer(hps, conditional_range_dict, cond_prop_var, rank=rank, world_size=world_size, load_path=hps['model_load_path'])
     else:
@@ -174,9 +173,9 @@ def main(rank, world_size):
     # from Samp_iter_online import build_train_loader
     train_loader = build_train_loader(hps, pretrainer, mixer, datafile = hps['offline_data_file']) # 'zinc_1M_random_df.csv')#'250k_rndm_zinc_drugs_clean_3.csv')
 
-    wandb_config = {"Note": f" PreTraining GFN w/ inexpensive reward"}
-    wandb_config.update(pretrainer.hps)
-    train(hps, pretrainer, mixer, train_loader, rank, wandb_config, wandb_project_name, wandb_mode= None, world_size=world_size)
+    run_config = {"Note": f" PreTraining GFN w/ inexpensive reward"}
+    run_config.update(pretrainer.hps)
+    train(hps, pretrainer, mixer, train_loader, rank, run_config, run_name="GFN_Pretrain", world_size=world_size)
     return
 
 if __name__ == "__main__":

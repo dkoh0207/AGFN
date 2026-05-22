@@ -15,17 +15,17 @@ import torch.distributed as dist
 import time
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 RDLogger.DisableLog("rdApp.*")
-import wandb
-wandb.login()
+from utils.csv_logger import CSVLogger, generate_run_name, save_run_config
 
-def train(hps, trainer, train_loader, rank, wandb_config, wandb_project_name, run_name, wandb_mode=None, world_size=1):
+def train(hps, trainer, train_loader, rank, run_config, run_name, world_size=1):
     t0 = time.time()
-    with wandb.init(project = wandb_project_name, config = wandb_config, mode = wandb_mode):#) config = wandb_config, mode = wandb_mode, id = "yrt9nv2g",resume="must"):
-        wandb.run.name=f'{run_name}_{wandb.run.name}'
-        print('Wandb Run: ',wandb.run.id, wandb.run.name)
-        if not os.path.exists(hps["log_dir"]+f'/{wandb.run.name}/'):
-            os.makedirs(hps["log_dir"]+f'/{wandb.run.name}/')
-        hps["log_dir"] = hps["log_dir"]+f'/{wandb.run.name}/'
+    run_name = generate_run_name(run_name)
+    print('Run: ', run_name)
+    if not os.path.exists(hps["log_dir"]+f'/{run_name}/'):
+        os.makedirs(hps["log_dir"]+f'/{run_name}/')
+    hps["log_dir"] = hps["log_dir"]+f'/{run_name}/'
+    save_run_config(run_config, hps["log_dir"] + "config.json")
+    with CSVLogger(hps["log_dir"] + "metrics.csv") as _csv_logger:
         for i, (gfn_batch, mols) in enumerate(train_loader):
             try:
                 it = trainer.start_step+i
@@ -124,16 +124,16 @@ def train(hps, trainer, train_loader, rank, wandb_config, wandb_project_name, ru
                     for i, k in enumerate(keys):
                         info_vals[k] = all_info_vals[i].item() / world_size
                     if rank == 0:
-                        wandb.log(info_vals)
+                        _csv_logger.log(info_vals)
                 else:
-                    wandb.log(info_vals)
+                    _csv_logger.log(info_vals)
 
                 
                 if (it % 100== 0) and (world_size > 1):
                         dist.barrier()
 
                 if (it %  hps['checkpoint_every']==0) and (trainer.rank == 0): #trainer.gfn_trainer.ckpt_scheduler.should_save() and  (trainer.rank == 0)  :#  
-                    trainer.gfn_trainer._save_state(it-trainer.start_step,wandb.run.name)
+                    trainer.gfn_trainer._save_state(it-trainer.start_step,run_name)
             except Exception as e:
                 print(e)
                 raise(e)
@@ -262,20 +262,18 @@ def main(rank, world_size):
 
     hps.task_model_path = hps.task_model_path 
 
-    wandb_project_name = hps.get("wandb_project_name", "GFN_Finetune") #"GFN_leadoptim" #
     if hps.type == 'rtb':
         finetuner = FineTunerRTB(hps,conditional_range_dict, cond_prop_var, hps['saved_model_path'],rank, world_size)
     elif hps.type == 'finetuning':
         finetuner = FineTuner(hps,conditional_range_dict, cond_prop_var, hps['saved_model_path'],rank, world_size)
     train_loader = build_train_loader(hps, finetuner)
-    wandb_config = {"Note": f"Finetuning GFN, pretrained GFN {hps['saved_model_path']},  task {hps['task']}; same condition and reward (+task rew) as pretrained GFN, layerwise LR, molwt 160_300, conditional changed, molwt_slope=0; fname: gfn_finetune_molwt_clearshadow_mwt_160_300_updatedcond_molwt_slope_0.out"}
-
-    wandb_config.update(hps)
+    run_config = {"Note": f"Finetuning GFN, pretrained GFN {hps['saved_model_path']}, task {hps['task']}"}
+    run_config.update(hps)
 
     print('conditional range dict ', conditional_range_dict)
     run_type = "RTB_" if hps.type.lower() == "rtb" else ""
     run_name = f"{run_type}FT_{hps.task}_{hps.objective}"
-    train(hps, finetuner, train_loader,rank ,wandb_config, wandb_project_name,  run_name=run_name,wandb_mode=None,world_size=world_size) #"disabled"
+    train(hps, finetuner, train_loader, rank, run_config, run_name=run_name, world_size=world_size)
 
 if __name__ == "__main__":
     world_size = 1 #torch.cuda.device_count() 
