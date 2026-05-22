@@ -14,17 +14,17 @@ import torch.distributed as dist
 import time
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 RDLogger.DisableLog("rdApp.*")
-import wandb
-wandb.login()
+from utils.csv_logger import CSVLogger, generate_run_name, save_run_config
 
-def train(hps, trainer, train_loader, rank, wandb_config, wandb_project_name, run_name, wandb_mode=None, world_size=1):
+def train(hps, trainer, train_loader, rank, run_config, run_name, world_size=1):
     t0 = time.time()
-    with wandb.init(project = wandb_project_name, config = wandb_config, mode = wandb_mode):#) config = wandb_config, mode = wandb_mode, id = "yrt9nv2g",resume="must"):
-        wandb.run.name=f'{run_name}_{wandb.run.name}'
-        print(wandb.run.id, wandb.run.name)
-        if not os.path.exists(hps["log_dir"]+f'/{wandb.run.name}/'):
-            os.makedirs(hps["log_dir"]+f'/{wandb.run.name}/')
-        hps["log_dir"] = hps["log_dir"]+f'/{wandb.run.name}/'
+    run_name = generate_run_name(run_name)
+    print('Run: ', run_name)
+    if not os.path.exists(hps["log_dir"]+f'/{run_name}/'):
+        os.makedirs(hps["log_dir"]+f'/{run_name}/')
+    hps["log_dir"] = hps["log_dir"]+f'/{run_name}/'
+    save_run_config(run_config, hps["log_dir"] + "config.json")
+    with CSVLogger(hps["log_dir"] + "metrics.csv") as _csv_logger:
         
         for i, (gfn_batch, mols) in enumerate(train_loader):
             try:
@@ -95,9 +95,9 @@ def train(hps, trainer, train_loader, rank, wandb_config, wandb_project_name, ru
                     for i, k in enumerate(keys):
                         info_vals[k] = all_info_vals[i].item() / world_size
                     if rank == 0:
-                        wandb.log(info_vals)
+                        _csv_logger.log(info_vals)
                 else:
-                    wandb.log(info_vals)
+                    _csv_logger.log(info_vals)
 
 
                               
@@ -107,7 +107,7 @@ def train(hps, trainer, train_loader, rank, wandb_config, wandb_project_name, ru
 
                 if (it %  hps['checkpoint_every']==0) and (trainer.rank == 0):
                     #TODO: update _save_state() to save optimizer's state as well
-                    trainer.gfn_trainer._save_state(it,wandb.run.name)
+                    trainer.gfn_trainer._save_state(it,run_name)
             except Exception as e:
                 raise e
                 # print(e)
@@ -246,15 +246,13 @@ def main(rank, world_size):
 
     hps.task_model_path = hps.task_model_path 
     
-    wandb_project_name = "GFN_Finetune"
     tasktrainer = TaskTrainer(hps,conditional_range_dict, cond_prop_var,rank, world_size)
     train_loader = build_train_loader(hps, tasktrainer, task_conditionals_dict= task_conditional_range_dict)
-    wandb_config = {"Note": f"Training GFN from scratch"}
-
-    wandb_config.update(hps)
+    run_config = {"Note": f"Training GFN from scratch"}
+    run_config.update(hps)
 
     idx = args.seed_idx
-    train(hps, tasktrainer, train_loader,rank ,wandb_config, wandb_project_name,  run_name=f'{idx}_TaskTrain_{hps.task}_{hps.objective}',wandb_mode=None,world_size=world_size) #"disabled"
+    train(hps, tasktrainer, train_loader, rank, run_config, run_name=f'{idx}_TaskTrain_{hps.task}_{hps.objective}', world_size=world_size)
 
 if __name__ == "__main__":
     world_size =  1 #torch.cuda.device_count()

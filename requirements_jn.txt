@@ -24,7 +24,6 @@ useful_rdkit_utils>=0.3
 
 # Utilities
 tqdm>=4.66
-wandb>=0.16
 easydict
 more_itertools
 PyYAML>=6

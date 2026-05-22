@@ -13,8 +13,6 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "DETAIL"
 RDLogger.DisableLog("rdApp.*")
-import wandb
-wandb.login()
 
 
 def main(rank, world_size):
@@ -59,17 +57,15 @@ def main(rank, world_size):
 
     hps.update(conditional_range_dict)
 
-    wandb_project_name = hps.get("wandb_project_name", "GFN_Finetune") #"GFN_leadoptim" #
     gfn_samples_path = f'{hps.gfn_samples_path}/GFN_gen_samples_{hps.target_name}/'
 
     os.makedirs(gfn_samples_path, exist_ok=True)
 
     finetuner = DockingFineTuner(hps,conditional_range_dict, cond_prop_var, hps['saved_model_path'],rank=rank, world_size= world_size, gfn_samples_path=gfn_samples_path)
     train_loader = build_train_loader(hps, finetuner)
-    wandb_config = {"Note": f"Finetuning GFN, pretrained GFN {hps['saved_model_path']},  task {hps['task']}; same condition and reward (+task rew) as pretrained GFN, layerwise LR, molwt 160_300, conditional changed, molwt_slope=0; fname: gfn_finetune_molwt_clearshadow_mwt_160_300_updatedcond_molwt_slope_0.out"}
-
-    wandb_config.update(hps)
-    train(hps, finetuner, train_loader,rank ,wandb_config, wandb_project_name,  run_name=f'{hps.target_name}_RTB_Denovo',wandb_mode=None,world_size=world_size) #"disabled"
+    run_config = {"Note": f"Denovo docking finetuning, pretrained GFN {hps['saved_model_path']}, task {hps['task']}, target {hps['target_name']}"}
+    run_config.update(hps)
+    train(hps, finetuner, train_loader, rank, run_config, run_name=f'{hps.target_name}_RTB_Denovo', world_size=world_size)
 
 if __name__ == "__main__":
     world_size = 1 # tested only with world_size 1 
