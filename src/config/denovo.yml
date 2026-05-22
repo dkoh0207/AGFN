@@ -6,7 +6,11 @@ finetuning:
   task: 'QedxSaxDock' 
   task_possible_range: [-20,0] 
   target_name: "braf" #"braf" #"fa7" #"parp1" # "jak2" #
+  docking_backend: "unidock"   # "vina" (QuickVina2-GPU) | "unidock" (Uni-Dock, in-process)
   vina_path: "/home/aid/miniconda3/envs/agfn/opt/Vina-GPU-2.1/QuickVina2-GPU-2.1/QuickVina2-GPU-2-1"
+  unidock_search_mode: "fast"  # fast | balance | detail
+  unidock_num_workers: 1       # >1 enables a multiprocessing pool for ETKDG conformer gen
+  unidock_bin_dir: "/home/aid/miniconda3/envs/unidock/bin"  # dedicated, self-contained Uni-Dock engine env
   gfn_samples_path: "./data/gfn_samples"
   saved_model_path: "./saved_models/pretrained/decent-butterfly-1_110000.pt"
   target_grid:

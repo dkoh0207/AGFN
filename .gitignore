@@ -17,3 +17,6 @@ src/autodocktools-py3/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Uni-Dock transient working dirs (created in cwd by unidock_tools; normally auto-cleaned)
+unidock_*/
