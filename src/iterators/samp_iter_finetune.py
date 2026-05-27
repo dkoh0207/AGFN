@@ -69,9 +69,14 @@ class FTSampling_Iterator(IterableDataset):
         }
 
         self.top_k_tracker = TopKTracker(ks=(10, 100))
-        self.top_k_path = f"{self.hps['log_dir']}/top_k_mols.pt"
-        self.top_k_tracker.load(self.top_k_path)
+        # Resolved lazily in __iter__, not here: build_train_loader runs before train()
+        # appends the per-run subdir to hps['log_dir'], so capturing it now would point the
+        # hall of fame at the shared base dir (leaking molecules across runs). The worker that
+        # actually fills the heap is forked only after the subdir is set, so __iter__ sees it.
+        self.top_k_dir = None
         self.iter_counter = 0
+        # canonical SMILES seen across the whole run, backing the cumulative-novelty metric
+        self.seen_smiles = set()
 
     def _reward_caco2(self, x):
         return self.reward.caco2(self.Y_scaler, self.task_model, x)
@@ -103,6 +108,29 @@ class FTSampling_Iterator(IterableDataset):
          flipped_data = self.reverse.flip_trajectory(data)
          return data, flipped_data, (lg_rewards, flat_rewards, total_reward, zinc_flat_offln_rew)
 
+    def _batch_diversity_metrics(self, trajs):
+        """Validity / uniqueness / novelty as **percentages (0-100)** over the full sampled batch.
+
+        Computed once per sampled batch (not per training sub-batch) so the numbers are meaningful:
+          - valid%  = trajectories whose graph yields a valid molecule, over the whole batch
+          - unique% = distinct molecules (canonical SMILES) among the valid ones
+          - novel%  = valid molecules never generated before this point in the run
+        Updates the running ``seen_smiles`` set that backs the cumulative-novelty metric.
+        """
+        valid_smiles = [
+            Chem.MolToSmiles(self.ctx.graph_to_mol(trajs[i]['traj'][-1][0]))
+            for i in range(len(trajs)) if trajs[i]["is_valid"]
+        ]
+        n_total = max(len(trajs), 1)
+        n_valid = max(len(valid_smiles), 1)
+        uniq = set(valid_smiles)
+        novel = uniq - self.seen_smiles
+        self.seen_smiles |= uniq
+        valid_pct = 100.0 * len(valid_smiles) / n_total
+        unique_pct = 100.0 * len(uniq) / n_valid
+        novel_pct = 100.0 * len(novel) / n_valid
+        return valid_pct, unique_pct, novel_pct
+
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         self._wid = worker_info.id if worker_info is not None else 0
@@ -124,7 +152,11 @@ class FTSampling_Iterator(IterableDataset):
                                                                                 random_action_prob = self.hps['random_action_prob'],
                                                                                 seed_graph = self.seed_graph )
                             tmp_offln_model = self.wrapped_model_prior if self.hps.type=='rtb' else self.wrapped_model
-                            _, offline_trajs, offln_rew_tup = self.smiles_2_offln_trajs(smiles_batch, tmp_offln_model, self.dev) 
+                            _, offline_trajs, offln_rew_tup = self.smiles_2_offln_trajs(smiles_batch, tmp_offln_model, self.dev)
+
+                        # Full-batch validity/uniqueness/novelty (%) over all online trajectories,
+                        # attached to every sub-batch yielded below.
+                        batch_valid_pct, batch_unique_pct, batch_novel_pct = self._batch_diversity_metrics(online_trajs)
 
                         r = (len(offline_trajs)+len(online_trajs)) // self.sub_batch_size
                         for j in range(0,min(len(offline_trajs), len(online_trajs)),self.sub_batch_size):
@@ -188,8 +220,9 @@ class FTSampling_Iterator(IterableDataset):
                             gfn_batch.online_flat_rewards = pred_reward_online
                             gfn_batch.offline_flat_rewards = offline_rew
                             gfn_batch.num_sub_online_trajs = len(sub_online_trajs)
-                            gfn_batch.valid_percent =  len(valid_idcs)/len(sub_online_trajs)
-                            gfn_batch.unique_percent = len(set(smiles_list))/len(sub_online_trajs)
+                            gfn_batch.valid_percent = batch_valid_pct
+                            gfn_batch.unique_percent = batch_unique_pct
+                            gfn_batch.novel_percent = batch_novel_pct
                             gfn_batch.avg_batch_len = (avg_batch_len)/len(sub_online_trajs)
                             gfn_batch.avg_fwd_logprob = avg_fwd_logprob/len(sub_online_trajs)
                             gfn_batch.avg_bck_logprob = avg_bck_logprob/len(sub_online_trajs)
@@ -218,103 +251,147 @@ class FTSampling_Iterator(IterableDataset):
                         print(e)
                         continue
         else:
-            for _ in range(self.hps['num_iter']):
-                try:
-                    cond_info = self.cond_info_task.compute_cond_info_forward(self.num_online)
-                    cond_info_encoding = self.cond_info_task.thermometer_encoding(cond_info)
-                    with torch.no_grad():
-                        online_trajs_sampled = self.graph_sampler.sample_from_model(self.wrapped_model,self.num_online,
-                                                                                cond_info_encoding.to(self.dev),
-                                                                                self.dev, random_stop_action_prob= self.hps['random_stop_prob'],
-                                                                                random_action_prob = self.hps['random_action_prob'],
-                                                                                seed_graph= self.seed_graph)
+            try:
+                # hps['log_dir'] is now the finalized per-run subdir (train() set it before
+                # this worker was forked); persist the hall of fame there and resume from it.
+                self.top_k_dir = self.hps['log_dir']
+                self.top_k_tracker.load(self.top_k_dir)
+                for _ in range(self.hps['num_iter']):
+                    try:
+                        cond_info = self.cond_info_task.compute_cond_info_forward(self.num_online)
+                        cond_info_encoding = self.cond_info_task.thermometer_encoding(cond_info)
+                        with torch.no_grad():
+                            online_trajs_sampled = self.graph_sampler.sample_from_model(self.wrapped_model,self.num_online,
+                                                                                    cond_info_encoding.to(self.dev),
+                                                                                    self.dev, random_stop_action_prob= self.hps['random_stop_prob'],
+                                                                                    random_action_prob = self.hps['random_action_prob'],
+                                                                                    seed_graph= self.seed_graph)
 
-                    for j in range(0, self.num_online, self.sub_batch_size):
-                        online_trajs = online_trajs_sampled[j:j+self.sub_batch_size]
-                        avg_batch_len, avg_fwd_logprob, avg_bck_logprob = 0, 0, 0
-                        for i in range(len(online_trajs)):
-                            avg_batch_len += len(online_trajs[i]['bck_a'])
-                            avg_fwd_logprob += online_trajs[i]['fwd_logprob'][0]
-                            avg_bck_logprob += online_trajs[i]['bck_logprob'][0]
+                        # Full-batch validity/uniqueness/novelty (%), computed once over all sampled
+                        # trajectories and attached to every sub-batch yielded below.
+                        batch_valid_pct, batch_unique_pct, batch_novel_pct = self._batch_diversity_metrics(online_trajs_sampled)
 
-                        valid_idcs = torch.tensor([i + 0 for i in range(len(online_trajs)) if (online_trajs[i + 0]["is_valid"])]).long()
-                        if len(valid_idcs)==0:
-                            with open(self.hps["log_dir"] + f"/invalid_mols{j}.txt", "w") as f:
-                                content = f"{str(online_trajs)}"
-                                f.write(content)
+                        for j in range(0, self.num_online, self.sub_batch_size):
+                            online_trajs = online_trajs_sampled[j:j+self.sub_batch_size]
+                            avg_batch_len, avg_fwd_logprob, avg_bck_logprob = 0, 0, 0
+                            for i in range(len(online_trajs)):
+                                avg_batch_len += len(online_trajs[i]['bck_a'])
+                                avg_fwd_logprob += online_trajs[i]['fwd_logprob'][0]
+                                avg_bck_logprob += online_trajs[i]['bck_logprob'][0]
+
+                            valid_idcs = torch.tensor([i + 0 for i in range(len(online_trajs)) if (online_trajs[i + 0]["is_valid"])]).long()
+                            if len(valid_idcs)==0:
+                                with open(self.hps["log_dir"] + f"/invalid_mols{j}.txt", "w") as f:
+                                    content = f"{str(online_trajs)}"
+                                    f.write(content)
                         
-                        mols = [self.ctx.graph_to_mol(online_trajs[i]['traj'][-1][0]) for i in valid_idcs]
-                        if self.hps.get('write_mols_to_disk', False):
-                            with open(self.gfn_samples_path+'/sampled_mols.pkl', 'wb') as f:
-                                pickle.dump(mols, f)
-                        rew_tup = self.reward.molecular_rewards(mols)
-                        rew = torch.Tensor(rew_tup[2]).unsqueeze(dim=1)
-                        if self.hps['task'] in self.task_model_reward_funcs:
-                            normalized_task_rew, true_task_score = self.reward.task_reward(self.hps.task, self.task_model, mols)
-                        else:
-                            normalized_task_rew, true_task_score = self.reward.task_reward(self.hps.task, mols)
-                        if self.hps['task_rewards_only']:
-                            flat_rewards =  torch.Tensor(normalized_task_rew) #  #torch.mul(rew,flat_rewards_task) #flat_rewards_qed
-                        else:
-                            flat_rewards = rew*normalized_task_rew
+                            mols = [self.ctx.graph_to_mol(online_trajs[i]['traj'][-1][0]) for i in valid_idcs]
+                            if self.hps.get('write_mols_to_disk', False):
+                                with open(self.gfn_samples_path+'/sampled_mols.pkl', 'wb') as f:
+                                    pickle.dump(mols, f)
+                            rew_tup = self.reward.molecular_rewards(mols)
+                            rew = torch.Tensor(rew_tup[2]).unsqueeze(dim=1)
+                            if self.hps['task'] in self.task_model_reward_funcs:
+                                normalized_task_rew, true_task_score = self.reward.task_reward(self.hps.task, self.task_model, mols)
+                            else:
+                                normalized_task_rew, true_task_score = self.reward.task_reward(self.hps.task, mols)
+                            if self.hps['task_rewards_only']:
+                                flat_rewards =  torch.Tensor(normalized_task_rew) #  #torch.mul(rew,flat_rewards_task) #flat_rewards_qed
+                            else:
+                                flat_rewards = rew*normalized_task_rew
 
-                        #Drug likeliness score
-                        smiles_list = [Chem.MolToSmiles(mol) for mol in mols]
-                        if self.hps['diversity_filter']:
-                            self.div_fil.update(smiles_list)
-                            #penalize rewards for frequently generated scaffolds
-                            flat_rewards = self.div_fil.penalize_reward(smiles_list,flat_rewards)
+                            #Drug likeliness score
+                            smiles_list = [Chem.MolToSmiles(mol) for mol in mols]
+                            if self.hps['diversity_filter']:
+                                self.div_fil.update(smiles_list)
+                                #penalize rewards for frequently generated scaffolds
+                                flat_rewards = self.div_fil.penalize_reward(smiles_list,flat_rewards)
 
-                        rewards_for_topk = flat_rewards.detach().cpu().numpy().reshape(-1).tolist()
-                        affinities_for_topk = np.asarray(true_task_score).reshape(-1).tolist()
-                        self.top_k_tracker.add_batch(
-                            smiles_list, rewards_for_topk,
-                            affinities=affinities_for_topk,
-                            iteration=self.iter_counter,
-                        )
-                        if self.iter_counter % self.hps.get('checkpoint_every', 10) == 0:
-                            self.top_k_tracker.save(self.top_k_path)
-                        self.iter_counter += 1
+                            rewards_for_topk = flat_rewards.detach().cpu().numpy().reshape(-1).tolist()
+                            affinities_for_topk = np.asarray(true_task_score).reshape(-1).tolist()
+                            self.top_k_tracker.add_batch(
+                                smiles_list, rewards_for_topk,
+                                affinities=affinities_for_topk,
+                                iteration=self.iter_counter,
+                            )
+                            # Persist on the top-K interval, decoupled from model checkpointing
+                            # (`checkpoint_every`): the hall of fame is tiny, so it can be flushed far
+                            # more often than the multi-hundred-MB model state. A final flush in
+                            # __iter__'s finally captures whatever accumulated since the last interval.
+                            if self.iter_counter % self.hps.get('top_k_save_every', 100) == 0:
+                                self._flush_top_k()
+                            self.iter_counter += 1
 
-                        #Ensure reward is set to 0 for invalid trajectories (molecules)
-                        pred_reward = torch.zeros((len(online_trajs), flat_rewards.shape[1]))
-                        pred_reward[valid_idcs - 0] = flat_rewards.float()
+                            #Ensure reward is set to 0 for invalid trajectories (molecules)
+                            pred_reward = torch.zeros((len(online_trajs), flat_rewards.shape[1]))
+                            pred_reward[valid_idcs - 0] = flat_rewards.float()
                         
-                        beta_vector = self.hps['beta_exp']*torch.ones(pred_reward.shape[0])
-                        log_rewards = self.beta_to_logreward(beta_vector, pred_reward)
+                            beta_vector = self.hps['beta_exp']*torch.ones(pred_reward.shape[0])
+                            log_rewards = self.beta_to_logreward(beta_vector, pred_reward)
 
-                        gfn_batch = self.algo.construct_batch(online_trajs, cond_info_encoding, log_rewards)#pred_reward.squeeze(dim=1))
+                            gfn_batch = self.algo.construct_batch(online_trajs, cond_info_encoding, log_rewards)#pred_reward.squeeze(dim=1))
                             
-                        gfn_batch.num_online = len(online_trajs)
-                        gfn_batch.num_offline = 0
-                        gfn_batch.flat_rewards = pred_reward.detach().cpu()
-                        gfn_batch.valid_percent =  len(valid_idcs)/len(online_trajs)
-                        gfn_batch.unique_percent = len(set(smiles_list))/len(online_trajs)
-                        gfn_batch.avg_batch_len = (avg_batch_len)/len(online_trajs)
-                        gfn_batch.avg_fwd_logprob = avg_fwd_logprob/len(online_trajs)
-                        gfn_batch.avg_bck_logprob = avg_bck_logprob/len(online_trajs)
+                            gfn_batch.num_online = len(online_trajs)
+                            gfn_batch.num_offline = 0
+                            gfn_batch.flat_rewards = pred_reward.detach().cpu()
+                            gfn_batch.valid_percent = batch_valid_pct
+                            gfn_batch.unique_percent = batch_unique_pct
+                            gfn_batch.novel_percent = batch_novel_pct
+                            gfn_batch.avg_batch_len = (avg_batch_len)/len(online_trajs)
+                            gfn_batch.avg_fwd_logprob = avg_fwd_logprob/len(online_trajs)
+                            gfn_batch.avg_bck_logprob = avg_bck_logprob/len(online_trajs)
                         
-                        gfn_batch.avg_qed = np.average(rew_tup[1][3][0])
-                        gfn_batch.avg_tpsa = np.average(rew_tup[1][0][0])
-                        gfn_batch.avg_num_rings =  np.average(rew_tup[1][1][0])
-                        gfn_batch.avg_sas =  np.average(rew_tup[1][2][0])
-                        if (self.hps.get("objective",None)=='property_targeting'):
-                            if (self.hps.subtype=='new_props'):
-                                gfn_batch.avg_new_prop = np.average(rew_tup[1][4][0])
+                            gfn_batch.avg_qed = np.average(rew_tup[1][3][0])
+                            gfn_batch.avg_tpsa = np.average(rew_tup[1][0][0])
+                            gfn_batch.avg_num_rings =  np.average(rew_tup[1][1][0])
+                            gfn_batch.avg_sas =  np.average(rew_tup[1][2][0])
+                            if (self.hps.get("objective",None)=='property_targeting'):
+                                if (self.hps.subtype=='new_props'):
+                                    gfn_batch.avg_new_prop = np.average(rew_tup[1][4][0])
                         
-                        gfn_batch.avg_zinc_rad = np.average(rew_tup[3])
-                        gfn_batch.avg_task_reward = np.average(normalized_task_rew) #torch.mean(flat_rewards_task).item()
-                        if self.hps.task is not None:
-                            gfn_batch.avg_task_score = np.average(true_task_score)
-                        else:
-                            gfn_batch.avg_task_reward, gfn_batch.avg_task_score = 0,0
+                            gfn_batch.avg_zinc_rad = np.average(rew_tup[3])
+                            gfn_batch.avg_task_reward = np.average(normalized_task_rew) #torch.mean(flat_rewards_task).item()
+                            if self.hps.task is not None:
+                                gfn_batch.avg_task_score = np.average(true_task_score)
+                            else:
+                                gfn_batch.avg_task_reward, gfn_batch.avg_task_score = 0,0
                                 
-                        yield gfn_batch, mols#, avg_batch_fwd_traj_len
-                except Exception as e:
-                    print(e)
-                    raise(e)
-                    continue
+                            yield gfn_batch, mols#, avg_batch_fwd_traj_len
+                    except Exception as e:
+                        print(e)
+                        raise(e)
+                        continue
+            finally:
+                self._flush_top_k_safe()
         
+    def _flush_top_k(self):
+        """Persist the running top-K heaps to disk.
+
+        Always writes the two flat CSVs; when a Uni-Dock backend is present it also exports
+        the 3D docked poses (with scores) as SDFs for visual inspection — poses come from the
+        backend's pose cache, so this never re-docks. The heaps are bounded at ``max_k``, so
+        this is cheap enough to call on every interval and again as a final flush.
+        """
+        self.top_k_tracker.save(self.top_k_dir)
+        if hasattr(self.reward, "unidock"):
+            snap = self.top_k_tracker.snapshot()
+            k = self.top_k_tracker.max_k
+            self.reward.unidock.write_hall_of_fame_sdf(
+                snap["top_by_affinity"][k], f"{self.top_k_dir}/top100_by_affinity.sdf")
+            self.reward.unidock.write_hall_of_fame_sdf(
+                snap["top_by_reward"][k], f"{self.top_k_dir}/top100_by_reward.sdf")
+
+    def _flush_top_k_safe(self):
+        """Best-effort final flush, called from __iter__'s finally so it runs on normal end,
+        on an exception, or on the GeneratorExit raised when the DataLoader tears the worker
+        down. Guarded so a flush failure can never mask the real teardown reason or crash the
+        worker during shutdown.
+        """
+        try:
+            self._flush_top_k()
+        except Exception as e:
+            print(f"[top-k] final flush skipped: {e}")
+
     def beta_to_logreward(self,beta_vector, pred_reward):
         scalar_logreward = pred_reward.squeeze().clamp(min=1e-30).log()
         assert len(scalar_logreward.shape) == len(

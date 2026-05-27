@@ -56,7 +56,7 @@ finetuning:
   layerwise_lr: True
   perturb_logZ: true
   atoms: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'S']
-  log_dir: './AGFN_logs/debug_run'
+  log_dir: '/home/aid/dkoh/log/generative/trash'
   diversity_filter: True
   offline_data: False
   offline_df_path: "./data/finetune_offline_data.csv"
@@ -105,5 +105,6 @@ finetuning:
   tb_p_b_is_parameterized: True
   num_thermometer_dim: 16
   sample_temp: 1
-  checkpoint_every: 10
+  checkpoint_every: 200       # how often (iters) to save the model state .pt
+  top_k_save_every: 100        # how often (iters) to flush the top-K hall of fame; also flushed once at run end
   

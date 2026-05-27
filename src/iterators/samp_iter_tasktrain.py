@@ -52,7 +52,28 @@ class TaskSampling_Iterator(IterableDataset):
             'MicroClearance': self._reward_micro_clearance,
             'HepatocyteClearance': self._reward_hepatocyte_clearance
         }
-        
+        # canonical SMILES seen across the whole run, backing the cumulative-novelty metric
+        self.seen_smiles = set()
+
+    def _batch_diversity_metrics(self, trajs):
+        """Validity / uniqueness / novelty as **percentages (0-100)** over the full sampled batch.
+
+        Computed once per sampled batch (not per training sub-batch) so the numbers are meaningful;
+        updates the running ``seen_smiles`` set that backs the cumulative-novelty metric.
+        """
+        valid_smiles = [
+            Chem.MolToSmiles(self.ctx.graph_to_mol(trajs[i]['traj'][-1][0]))
+            for i in range(len(trajs)) if trajs[i]["is_valid"]
+        ]
+        n_total = max(len(trajs), 1)
+        n_valid = max(len(valid_smiles), 1)
+        uniq = set(valid_smiles)
+        novel = uniq - self.seen_smiles
+        self.seen_smiles |= uniq
+        return (100.0 * len(valid_smiles) / n_total,
+                100.0 * len(uniq) / n_valid,
+                100.0 * len(novel) / n_valid)
+
     def _reward_caco2(self, x):
         return self.reward.caco2(self.Y_scaler, self.task_model, x)
 
@@ -94,6 +115,8 @@ class TaskSampling_Iterator(IterableDataset):
                                                                             self.dev, random_stop_action_prob= self.hps['random_stop_prob'],
                                                                             random_action_prob = self.hps['random_action_prob'],
                                                                             ft_cond_info = cond_info_tasktrain_encoding)
+                # Full-batch validity/uniqueness/novelty (%), attached to every sub-batch below.
+                batch_valid_pct, batch_unique_pct, batch_novel_pct = self._batch_diversity_metrics(online_trajs_sampled)
                 for j in range(0, self.num_online, self.sub_batch_size):
                     online_trajs = online_trajs_sampled[j:j+self.sub_batch_size]
                     avg_batch_len, avg_fwd_logprob, avg_bck_logprob = 0, 0,0
@@ -138,8 +161,9 @@ class TaskSampling_Iterator(IterableDataset):
                     gfn_batch.num_online = len(online_trajs)
                     gfn_batch.num_offline = 0
                     gfn_batch.flat_rewards = pred_reward.detach().cpu()
-                    gfn_batch.valid_percent =  len(valid_idcs)/len(online_trajs)
-                    gfn_batch.unique_percent = len(set(smiles_list))/len(online_trajs)
+                    gfn_batch.valid_percent = batch_valid_pct
+                    gfn_batch.unique_percent = batch_unique_pct
+                    gfn_batch.novel_percent = batch_novel_pct
                     gfn_batch.avg_batch_len = (avg_batch_len)/len(online_trajs)
                     # gfn_batch.sa_score = np.average([sascore.calculateScore(m) for m in mols])
                     gfn_batch.avg_fwd_logprob = avg_fwd_logprob/len(online_trajs)
