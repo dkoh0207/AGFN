@@ -59,11 +59,18 @@ def dock_smiles(
     search_mode: str = "fast",
     seed: int = 1,
     num_workers: int = 1,
-) -> List[float]:
+    return_poses: bool = False,
+):
     """Dock a batch of SMILES against ``receptor`` and return per-SMILES docking scores.
 
     Failures (bad SMILES, failed embedding, missing output) yield ``0.0``. ETKDG runs as an
     in-process loop by default; ``num_workers > 1`` opts into a multiprocessing pool.
+
+    When ``return_poses`` is True, also returns the docked 3D poses as MOL-block strings (so the
+    hall of fame can be written to SDF without re-docking). Returns ``(scores, molblocks)`` with
+    ``molblocks`` aligned to ``smiles_list`` (``None`` where docking failed); the pose's
+    coordinates are absolute, in the receptor's frame. The molblock is captured here, before the
+    ``TemporaryDirectory`` is torn down.
     """
     # Imported here (lazily) so importing this module stays cheap and any unidock_tools issue
     # surfaces at dock time with a clear traceback rather than at import.
@@ -109,15 +116,22 @@ def dock_smiles(
             )
 
         scores: List[float] = []
+        molblocks: List[Optional[str]] = []
         for i in range(num_mols):
+            molblock = None
             try:
                 docked_file = out_dir / "savedir" / f"{i}.sdf"
                 docked_rdmol = list(Chem.SDMolSupplier(str(docked_file)))[0]
                 assert docked_rdmol is not None
                 score = float(docked_rdmol.GetProp("docking_score"))
+                if return_poses:
+                    molblock = Chem.MolToMolBlock(docked_rdmol)
             except Exception:
                 score = 0.0
             scores.append(score)
+            molblocks.append(molblock)
+    if return_poses:
+        return scores, molblocks
     return scores
 
 
@@ -158,6 +172,11 @@ class UniDockGPU:
         self.reward_scale_min = reward_scale_min
         self.num_workers = num_workers
         self.seed = seed
+        # Cache of the best (most negative) docked pose seen per canonical SMILES, so the hall of
+        # fame can be written to SDF without re-docking. Keyed by the SMILES passed to
+        # calculate_rewards (already canonical), so keys match TopKTracker's keys exactly.
+        self.pose_index: dict = {}                # smiles -> (affinity, molblock)
+        self._pose_cap = 2000                     # bound memory; >> tracker max_k (100)
 
     def calculate_rewards(self, smiles: List[str]) -> Tuple[List[str], List[float], List[float]]:
         """Dock ``smiles`` and return ``(smiles, affinities, rewards)``.
@@ -165,8 +184,10 @@ class UniDockGPU:
         Affinities are clamped to <= 0 (positive/failed scores -> 0, as in RxnFlow), then scaled
         to a reward via ``(affinity + reward_scale_min) / (reward_scale_min + reward_scale_max)
         - 1`` (defaults map an affinity of -10 -> reward 0 and -1 -> reward -1).
+
+        Side effect: caches each successful docked pose in ``self.pose_index`` for SDF export.
         """
-        affinities = dock_smiles(
+        affinities, molblocks = dock_smiles(
             smiles,
             self.receptor,
             self.center,
@@ -174,9 +195,12 @@ class UniDockGPU:
             search_mode=self.search_mode,
             seed=self.seed,
             num_workers=self.num_workers,
+            return_poses=True,
         )
         affinities = np.array([min(a, 0.0) for a in affinities], dtype=np.float64)
         rewards = (affinities + self.reward_scale_min) / (self.reward_scale_min + self.reward_scale_max) - 1
+
+        self._cache_poses(smiles, affinities, molblocks)
 
         print(
             f"UNIDOCK AFFINITIES: mean={round(float(np.mean(affinities)), 3)}, "
@@ -186,3 +210,47 @@ class UniDockGPU:
         )
 
         return list(smiles), list(affinities), list(rewards)
+
+    def _cache_poses(self, smiles, affinities, molblocks):
+        """Keep the most-negative-affinity pose per SMILES, bounded to ``_pose_cap`` entries."""
+        for smi, aff, mb in zip(smiles, affinities, molblocks):
+            if mb is None:
+                continue
+            aff = float(aff)
+            prev = self.pose_index.get(smi)
+            if prev is None or aff < prev[0]:
+                self.pose_index[smi] = (aff, mb)
+        if len(self.pose_index) > self._pose_cap:
+            # drop the worst (least negative) affinities
+            keep = sorted(self.pose_index.items(), key=lambda kv: kv[1][0])[: self._pose_cap]
+            self.pose_index = dict(keep)
+
+    def write_hall_of_fame_sdf(self, entries, path: str) -> int:
+        """Write top molecules + their cached docked poses to an SDF.
+
+        ``entries`` is a TopKTracker snapshot bucket: a list of ``(smiles, reward, affinity,
+        iteration)`` already in rank order. For each entry with a cached pose, write the 3D pose
+        with ``smiles``/``docking_score``/``reward``/``iteration``/``rank`` as SD tags. Entries
+        whose pose isn't cached are skipped. Returns the number of molecules written.
+        """
+        from pathlib import Path
+
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        written = 0
+        with Chem.SDWriter(str(path)) as w:
+            for rank, (smiles, reward, affinity, iteration) in enumerate(entries, start=1):
+                cached = self.pose_index.get(smiles)
+                if cached is None:
+                    continue
+                mol = Chem.MolFromMolBlock(cached[1])
+                if mol is None:
+                    continue
+                mol.SetProp("_Name", f"rank{rank}")
+                mol.SetProp("smiles", smiles)
+                mol.SetProp("rank", str(rank))
+                mol.SetProp("docking_score", f"{affinity}")
+                mol.SetProp("reward", f"{reward}")
+                mol.SetProp("iteration", str(iteration))
+                w.write(mol)
+                written += 1
+        return written
