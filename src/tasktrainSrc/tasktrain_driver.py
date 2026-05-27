@@ -44,6 +44,7 @@ def train(hps, trainer, train_loader, rank, run_config, run_name, world_size=1):
                         f"Average {hps['task']} score online": gfn_batch.avg_task_score,
                         "Percent_valid_mols":gfn_batch.valid_percent,
                         "Percent_unique_in_batch":gfn_batch.unique_percent,
+                        "Percent_novel_cumulative":gfn_batch.novel_percent,
                         "Average traj len online": gfn_batch.avg_batch_len,
                         # "Average SAS":gfn_batch.sa_score,
                         "Average fwd_logprob": gfn_batch.avg_fwd_logprob.item(),
