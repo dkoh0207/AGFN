@@ -332,6 +332,11 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
             g = gp
         zeros = lambda s: np.zeros(s, dtype=np.float32)
         ones = lambda s: np.ones(s, dtype=np.float32)
+        # Frozen-core spec carried on the seed graph (see build_frozen_seed_graph). When
+        # frozen_seed_size == 0 (the default for every other code path, incl. offline dataset
+        # molecules) none of the frozen-core masking below fires, so the output is unchanged.
+        frozen_seed_size = g.graph.get("frozen_seed_size", 0)
+        frozen_growth = g.graph.get("frozen_growth_sites", set())
         x = zeros((max(1, len(g.nodes)), self.num_node_dim - self.num_rw_feat))
         x[0, -1] = len(g.nodes) == 0
         add_node_mask = ones((x.shape[0], self.num_new_node_values))
@@ -410,6 +415,12 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
             if "expl_H" not in ad and explicit_valence[n] + 1 > max_valence[n]:
                 s, e = self.atom_attr_logit_slice["expl_H"]
                 set_node_attr_mask[i, s:e] = 0
+            # Frozen core: every seed atom's attrs/identity are immutable, and a new atom may be
+            # attached only at a declared growth site. (Node label n == feature row for seed atoms.)
+            if frozen_seed_size and n < frozen_seed_size:
+                set_node_attr_mask[i, :] = 0
+                if n not in frozen_growth:
+                    add_node_mask[i, :] = 0
 
         remove_edge_mask = zeros((len(g.edges), 1))
         for i, e in enumerate(g.edges):
@@ -421,6 +432,8 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
         remove_edge_attr_mask = zeros((len(g.edges), len(self.bond_attrs)))
         for i, e in enumerate(g.edges):
             ad = g.edges[e]
+            # Capture now: the inner loop below rebinds `e` to a logit-slice (s, e = ...).
+            core_edge = bool(frozen_seed_size) and e[0] < frozen_seed_size and e[1] < frozen_seed_size
             for k, sl in zip(self.bond_attrs, self.bond_attr_slice):
                 idx = self.bond_attr_values[k].index(ad[k]) if k in ad else 0
                 edge_attr[i * 2, sl + idx] = 1
@@ -436,6 +449,10 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
                     # -1 because we'd be removing the single bond and replacing it with a double/triple/aromatic bond
                     is_ok = all([explicit_valence[n] + self._bond_valence[bond_type] - 1 <= max_valence[n] for n in e])
                     set_edge_attr_mask[i, sl + ti] = float(is_ok)
+            # Frozen core: a bond between two core atoms is immutable (applied after the loop above,
+            # which both writes set_edge_attr_mask and rebinds `e`).
+            if core_edge:
+                set_edge_attr_mask[i, :] = 0
         edge_index = np.array([e for i, j in g.edges for e in [(i, j), (j, i)]], dtype=np.int64).reshape((-1, 2)).T
 
         if self.max_edges is not None and len(g.edges) >= self.max_edges:
@@ -456,6 +473,20 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
                 ],
                 dtype=np.int64,
             )
+        # AddEdge candidates are the rows of non_edge_index; already valence-filtered above.
+        add_edge_mask = ones((non_edge_index.shape[0], 1))
+        # Frozen core: forbid a new bond that would either join two core atoms or attach to a
+        # non-growth core atom. Zero the mask rows (keeps non_edge_index ordering, so the AddEdge
+        # decode in aidx_to_GraphAction stays aligned).
+        if frozen_seed_size and non_edge_index.ndim == 2 and non_edge_index.shape[0] and non_edge_index.shape[1] == 2:
+            for r in range(non_edge_index.shape[0]):
+                u, v = int(non_edge_index[r, 0]), int(non_edge_index[r, 1])
+                if (
+                    (u < frozen_seed_size and v < frozen_seed_size)
+                    or (u < frozen_seed_size and u not in frozen_growth)
+                    or (v < frozen_seed_size and v not in frozen_growth)
+                ):
+                    add_edge_mask[r] = 0
         data = dict(
             x=x,
             edge_index=edge_index,
@@ -464,7 +495,7 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
             stop_mask=ones((1, 1)) * (len(g.nodes) > 0),  # Can only stop if there's at least a node
             add_node_mask=add_node_mask,
             set_node_attr_mask=set_node_attr_mask,
-            add_edge_mask=ones((non_edge_index.shape[0], 1)),  # Already filtered by checking for valence
+            add_edge_mask=add_edge_mask,  # valence-filtered above; also frozen-core-filtered
             set_edge_attr_mask=set_edge_attr_mask,
             remove_node_mask=remove_node_mask,
             remove_node_attr_mask=remove_node_attr_mask,
@@ -604,3 +635,79 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
         if mol is None:
             return False
         return True
+
+
+def _parse_atom_index_list(x):
+    """Accept None, a list of ints, or a comma-separated string ('0, 2 ,4') -> list[int] | None."""
+    if x is None:
+        return None
+    if isinstance(x, str):
+        return [int(t) for t in x.replace(" ", "").split(",") if t != ""]
+    return [int(i) for i in x]
+
+
+def build_frozen_seed_graph(ctx, smiles, allowed_growth_atoms=None, frozen_atoms=None):
+    """Build a seed Graph whose atoms 0..N-1 form an immutable frozen core.
+
+    The whole seed molecule (every atom and the bonds among them) is the immutable core;
+    ``frozen_growth_sites`` is the subset of seed atoms at which new atoms may be attached
+    during generation. Atom indices are 0-based in RDKit parse order; because AGFN assigns
+    new nodes the label ``max(nodes)+1`` and never renumbers, the seed atoms keep labels
+    ``0..N-1`` for the whole trajectory, so the index-based spec stays valid throughout.
+
+    Exactly one of ``allowed_growth_atoms`` / ``frozen_atoms`` may be given (both accept a
+    list[int] or a comma-separated string):
+      - allowed_growth_atoms: indices allowed to grow; every other seed atom is frozen.
+      - frozen_atoms:         indices to freeze; every other seed atom may grow.
+      - neither:              whole core frozen, every seed atom may grow.
+
+    The spec is stamped onto the graph as ``g.graph['frozen_seed_size']`` (= N) and
+    ``g.graph['frozen_growth_sites']`` (a set of node labels). Both survive ``g.copy()`` in
+    ``GraphBuildingEnv.step``, so the constraint rides along every forward step. A graph with
+    ``frozen_seed_size`` absent/0 is treated as unconstrained (the default everywhere else).
+    """
+    allowed_growth_atoms = _parse_atom_index_list(allowed_growth_atoms)
+    frozen_atoms = _parse_atom_index_list(frozen_atoms)
+    if allowed_growth_atoms is not None and frozen_atoms is not None:
+        raise ValueError("Specify only one of allowed_growth_atoms / frozen_atoms.")
+
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        raise ValueError(f"initial_scaffold is not a valid SMILES: {smiles!r}")
+    allowed_symbols = set(ctx.atom_attr_values["v"])
+    bad_atoms = sorted({a.GetSymbol() for a in mol.GetAtoms()} - allowed_symbols)
+    if bad_atoms:
+        raise ValueError(
+            f"seed contains atom type(s) {bad_atoms} not in the model's atom set "
+            f"{sorted(allowed_symbols)}."
+        )
+
+    g = ctx.mol_to_graph(mol)
+    n = len(g.nodes)
+    assert set(g.nodes) == set(range(n)), "seed graph node labels must be 0..N-1"
+
+    def _check_range(idxs, label):
+        bad = sorted(i for i in idxs if not (0 <= i < n))
+        if bad:
+            raise ValueError(f"{label} has out-of-range indices {bad} for a seed with {n} atoms (0..{n - 1}).")
+
+    if allowed_growth_atoms is not None:
+        _check_range(allowed_growth_atoms, "allowed_growth_atoms")
+        growth = set(allowed_growth_atoms)
+    elif frozen_atoms is not None:
+        _check_range(frozen_atoms, "frozen_atoms")
+        growth = set(range(n)) - set(frozen_atoms)
+    else:
+        growth = set(range(n))
+
+    if len(growth) == 0:
+        raise ValueError("All seed atoms are frozen; specify at least one growth site.")
+    if ctx.max_nodes is not None and n >= ctx.max_nodes:
+        warnings.warn(
+            f"seed has {n} atoms but max_nodes={ctx.max_nodes}; there is no room to grow.",
+            stacklevel=2,
+        )
+
+    g.graph["frozen_seed_size"] = n
+    g.graph["frozen_growth_sites"] = growth
+    return g

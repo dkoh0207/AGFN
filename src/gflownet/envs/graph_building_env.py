@@ -172,6 +172,13 @@ class GraphBuildingEnv:
             the new graph
         """
         gp = g.copy()
+        # Frozen-core spec carried on the graph (see build_frozen_seed_graph). Absent/0 means
+        # unconstrained, so these guards are skipped for every non-frozen graph (incl. all offline
+        # dataset molecules). They are a safety net behind the action masks in graph_to_Data: an
+        # unmasked frozen action raises AssertionError, which the sampler marks as an invalid
+        # trajectory (graph_sampling.py). Node labels 0..seed_size-1 are the immutable core.
+        seed_size = g.graph.get("frozen_seed_size", 0)
+        growth = g.graph.get("frozen_growth_sites", set())
         # print('graph_build_env.py step() action ', action.__dict__)
         if action.action is GraphActionType.AddEdge:
             a, b = action.source, action.target
@@ -180,6 +187,12 @@ class GraphBuildingEnv:
             if a > b:
                 a, b = b, a
             assert a != b
+            if seed_size:
+                assert not (a < seed_size and b < seed_size), "frozen-core: no new bond between core atoms"
+                if a < seed_size:
+                    assert a in growth, "frozen-core: bond onto a non-growth core atom"
+                if b < seed_size:
+                    assert b in growth, "frozen-core: bond onto a non-growth core atom"
             # assert not g.has_edge(a, b)
             # Ideally the FA underlying this must only be able to send
             # create_edge actions which respect this a<b property (or
@@ -192,11 +205,10 @@ class GraphBuildingEnv:
                 assert action.source == 0  # TODO: this may not be useful
                 gp.add_node(0, v=action.value)
             else:
-                if self.scaffold_masking:
-                    assert action.source == 6 or action.source > 17
-                    # print('graPH Env.py action.source ', action.source)
-                else:
-                    assert action.source in g.nodes
+                assert action.source in g.nodes
+                if seed_size and action.source < seed_size:
+                    # Frozen core: new atoms may attach only at declared growth sites.
+                    assert action.source in growth, "frozen-core: cannot grow at a frozen core atom"
                 e = [action.source, max(g.nodes) + 1]
                 if action.relabel is not None:
                     raise ValueError("deprecated")
@@ -209,6 +221,8 @@ class GraphBuildingEnv:
         elif action.action is GraphActionType.SetNodeAttr:
             assert self.allow_node_attr
             assert action.source in gp.nodes
+            if seed_size and action.source < seed_size:
+                assert False, "frozen-core: core atom attributes are immutable"
             # For some "optional" attributes like wildcard atoms, we indicate that they haven't been
             # chosen by the 'None' value. Here we make sure that either the attribute doesn't
             # exist, or that it's an optional attribute that hasn't yet been set.
@@ -217,21 +231,31 @@ class GraphBuildingEnv:
 
         elif action.action is GraphActionType.SetEdgeAttr:
             assert self.allow_edge_attr
+            if seed_size and action.source < seed_size and action.target < seed_size:
+                assert False, "frozen-core: core bond attributes are immutable"
             # assert g.has_edge(action.source, action.target)
             assert action.attr not in gp.edges[(action.source, action.target)]
             gp.edges[(action.source, action.target)][action.attr] = action.value
 
         elif action.action is GraphActionType.RemoveNode:
             #assert g.has_node(action.source)
+            if seed_size and action.source < seed_size:
+                assert False, "frozen-core: cannot remove a core atom"
             gp = graph_without_node(gp, action.source)
         elif action.action is GraphActionType.RemoveNodeAttr:
             #assert g.has_node(action.source)
+            if seed_size and action.source < seed_size:
+                assert False, "frozen-core: cannot remove a core atom attribute"
             gp = graph_without_node_attr(gp, action.source, action.attr)
         elif action.action is GraphActionType.RemoveEdge:
             assert g.has_edge(action.source, action.target)
+            if seed_size and action.source < seed_size and action.target < seed_size:
+                assert False, "frozen-core: cannot remove a core bond"
             gp = graph_without_edge(gp, (action.source, action.target))
         elif action.action is GraphActionType.RemoveEdgeAttr:
             assert g.has_edge(action.source, action.target)
+            if seed_size and action.source < seed_size and action.target < seed_size:
+                assert False, "frozen-core: cannot remove a core bond attribute"
             gp = graph_without_edge_attr(gp, (action.source, action.target), action.attr)
         else:
             raise ValueError(f"Unknown action type {action.action}", action.action)

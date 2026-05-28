@@ -6,7 +6,7 @@ import torch
 import os
 import argparse
 from gflownet.algo.trajectory_balance import TrajectoryBalance
-from gflownet.envs.mol_building_env import MolBuildingEnvContext
+from gflownet.envs.mol_building_env import MolBuildingEnvContext, build_frozen_seed_graph
 from gflownet.envs.graph_building_env import GraphBuildingEnv
 from gflownet.models.conditionals import ConditionalInfo
 from gflownet.models.graph_transformer import GraphTransformerGFN, PrunedGraphTransformerGFN
@@ -69,11 +69,13 @@ def remove_duplicates(smiles_list, reference_smiles=None, stereo=False):
 
 
 class Sampler():
-    def __init__(self, model_load_path, seed_graph= None, save_path = './data/gfn_samples/'):
+    def __init__(self, model_load_path, seed_graph= None, save_path = './data/gfn_samples/',
+                 initial_scaffold=None, allowed_growth_atoms=None, frozen_atoms=None):
         self.device = torch.device(f'cuda') if torch.cuda.is_available() is not None else torch.device('cpu')
         self.seed_graph = seed_graph
         self.save_path = save_path
-        loaded_dict = torch.load(model_load_path, map_location='cpu')
+        # weights_only defaults to True on torch>=2.6 and rejects the pickled EasyDict 'hps' below.
+        loaded_dict = torch.load(model_load_path, map_location='cpu', weights_only=False)
         self.hps = loaded_dict['hps']
         self.cond_prop_var= {
             'tpsa':20,
@@ -90,6 +92,15 @@ class Sampler():
                                           atoms = self.hps.get('atoms',["C", "N", "O", "F", "P", "S"]), 
                                           num_rw_feat=0) 
         self.ctx.num_rw_feat = 0
+        # Frozen-core / fixed-seed sampling: build the seed graph from the model's own ctx so the
+        # atom set and featurization match the checkpoint. Overrides any seed_graph passed in.
+        if initial_scaffold is not None:
+            self.seed_graph = build_frozen_seed_graph(
+                self.ctx, initial_scaffold,
+                allowed_growth_atoms=allowed_growth_atoms, frozen_atoms=frozen_atoms)
+            print(f"[frozen-core] seed '{initial_scaffold}': "
+                  f"{self.seed_graph.graph['frozen_seed_size']} core atoms, "
+                  f"{len(self.seed_graph.graph['frozen_growth_sites'])} growth site(s).")
         env = GraphBuildingEnv()
         if hasattr(self.ctx, "graph_def"):
             env.graph_cls = self.ctx.graph_cls

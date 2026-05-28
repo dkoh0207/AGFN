@@ -3,7 +3,18 @@ finetuning:
   wandb_project_name: "GFN_Finetune"
   # seed_smiles: 'CC1(C)CC(=O)C2=C(C1)Nc1[nH]c(=O)[nH]c(=O)c1[C@H]2c1ccc(-c2cc(Cl)ccc2Cl)o1' #'O=C(Nc1ccc(Cl)nc1)c1cncc(OCc2ccn[nH]2)n1'
   # seed_scaffold: null #"CNc1nc(OCc2cncn2C)cnc1C(N)=O"
-  task: 'QedxSaxDock' 
+  # --- Frozen-core / fixed-seed growth (atom-index method) ---
+  # initial_scaffold: the literal seed molecule every trajectory starts from; its whole core is
+  #   held immutable while new atoms are grown at the allowed sites. (Distinct from seed_smiles,
+  #   which uses the Murcko scaffold and leaves the seed editable.) Setting it forces online-only.
+  # Specify growth sites with EXACTLY ONE of (0-based RDKit atom indices of initial_scaffold;
+  # list or comma-string). If neither is given, the whole core is frozen but every atom may grow.
+  #   allowed_growth_atoms: indices allowed to grow; all other core atoms are frozen.
+  #   frozen_atoms:         indices to freeze; all other core atoms may grow.
+  # initial_scaffold: 'O=C(Nc1ccc(Cl)nc1)c1cncc(OCc2ccn[nH]2)n1'
+  # allowed_growth_atoms: [0, 1, 2]
+  # frozen_atoms: null
+  task: 'QedxSaxDock'
   task_possible_range: [-20,0] 
   target_name: "braf"
   unidock_search_mode: "fast"  # fast | balance | detail

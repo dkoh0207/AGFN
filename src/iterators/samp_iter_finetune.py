@@ -5,6 +5,7 @@ from rdkit.Chem.Scaffolds import MurckoScaffold
 from utils.helpers import DiversityFilter
 from utils.top_k_tracker import TopKTracker
 from agfn.backtraj import ReverseFineTune
+from gflownet.envs.mol_building_env import build_frozen_seed_graph
 import pickle
 import numpy as np
 
@@ -44,7 +45,25 @@ class FTSampling_Iterator(IterableDataset):
         if (self.hps['task'] in self.tasks):
             self.Y_scaler = ft_trainer.Y_scaler
         self.reverse = ReverseFineTune(ft_trainer.env, self.ctx,self.hps, ft_trainer.rng)
-        if 'seed_smiles' in self.hps:
+        if self.hps.get('initial_scaffold', None):
+            # Frozen-core / fixed-seed growth: start every trajectory from the literal seed molecule
+            # with its core held immutable (unlike seed_smiles below, which uses the Murcko scaffold
+            # and leaves the seed editable). See build_frozen_seed_graph for the index conventions.
+            self.seed_graph = build_frozen_seed_graph(
+                self.ctx, self.hps['initial_scaffold'],
+                allowed_growth_atoms=self.hps.get('allowed_growth_atoms', None),
+                frozen_atoms=self.hps.get('frozen_atoms', None),
+            )
+            print(f"[frozen-core] seeding from initial_scaffold "
+                  f"({self.seed_graph.graph['frozen_seed_size']} core atoms, "
+                  f"{len(self.seed_graph.graph['frozen_growth_sites'])} growth site(s)).")
+            if self.offline_data:
+                # Offline trajectories are reconstructed from dataset molecules that do not contain
+                # the seed core, so they cannot satisfy the frozen-core constraint. Run online-only.
+                print("[frozen-core] forcing ONLINE-ONLY mode (offline dataset molecules "
+                      "cannot preserve the frozen core).")
+                self.offline_data = False
+        elif 'seed_smiles' in self.hps:
             if self.hps['seed_scaffold']:
                 print('trajsamp.py Optimizing ', self.hps['seed_scaffold'])
                 scaffold = Chem.MolFromSmiles(self.hps['seed_scaffold'])

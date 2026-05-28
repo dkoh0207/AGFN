@@ -11,6 +11,17 @@ finetuning:
   task_model_path: './saved_models/task_models/ld50_mae0_62_catboostmaplight.pkl'
   offline_data: True # False #True #
   offline_df_path: "./data/task_files/pres_ld50_zhu.csv" # "/home/mkpandey/gfn_pretrain_test_env/code/GFN-Pretrain/src/MyGFN_Pretrain/data/task_offline_df/logP_1_65pres_11K.csv"
+  # --- Frozen-core / fixed-seed growth (atom-index method) ---
+  # initial_scaffold: the literal seed molecule every trajectory starts from; its whole core is
+  #   held immutable while new atoms grow at the allowed sites. Distinct from seed_smiles (Murcko
+  #   scaffold, editable). Setting it forces online-only (offline molecules can't preserve the core).
+  # Specify growth with EXACTLY ONE of these (0-based RDKit atom indices; list or comma-string).
+  # If neither is given, the whole core is frozen but every atom may grow.
+  #   allowed_growth_atoms: indices allowed to grow; all other core atoms are frozen.
+  #   frozen_atoms:         indices to freeze; all other core atoms may grow.
+  # initial_scaffold: null
+  # allowed_growth_atoms: null
+  # frozen_atoms: null
   saved_model_path: './saved_models/pretrained/decent-butterfly-1_110000.pt'
   gfn_loss_coeff:  0.04
   MLE_coeff: 20
