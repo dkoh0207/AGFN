@@ -638,10 +638,22 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
 
 
 def _parse_atom_index_list(x):
-    """Accept None, a list of ints, or a comma-separated string ('0, 2 ,4') -> list[int] | None."""
+    """Normalize an atom-index spec to list[int], or None when unset.
+
+    Accepts None, a scalar int (a single-index YAML value like ``frozen_atoms: 3``), a list of
+    ints, or a comma-separated string ('0, 2 ,4'). A blank/whitespace string is treated as unset
+    (-> None), so an empty YAML value means "no restriction" rather than "freeze everything".
+    """
     if x is None:
         return None
+    if isinstance(x, bool):  # guard: bool is a subclass of int
+        raise ValueError(f"atom index list must be ints, got bool {x!r}")
+    if isinstance(x, int):
+        return [x]
     if isinstance(x, str):
+        x = x.strip()
+        if not x:
+            return None
         return [int(t) for t in x.replace(" ", "").split(",") if t != ""]
     return [int(i) for i in x]
 

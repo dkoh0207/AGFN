@@ -57,6 +57,9 @@ class FTSampling_Iterator(IterableDataset):
             print(f"[frozen-core] seeding from initial_scaffold "
                   f"({self.seed_graph.graph['frozen_seed_size']} core atoms, "
                   f"{len(self.seed_graph.graph['frozen_growth_sites'])} growth site(s)).")
+            if 'seed_smiles' in self.hps:
+                print("[frozen-core] note: seed_smiles/seed_scaffold are ignored because "
+                      "initial_scaffold is set.")
             if self.offline_data:
                 # Offline trajectories are reconstructed from dataset molecules that do not contain
                 # the seed core, so they cannot satisfy the frozen-core constraint. Run online-only.

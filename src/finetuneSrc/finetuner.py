@@ -65,9 +65,11 @@ class FineTunerRTB():
         self.cond_info_task = ConditionalInfo(conditional_range_dict, cond_prop_var, hps['num_thermometer_dim'], hps['OOB_percent'])
         self.reward = RewardFineTune(conditional_range_dict,ft_conditionals_dict, cond_prop_var, hps["reward_aggergation"], hps['atomenv_dictionary'], hps['zinc_rad_scale'], hps)
 
-        self.gfn_trainer = GFNTrainerRTB(hps, self.algo, self.rng, self.device, self.env, self.ctx) 
+        self.gfn_trainer = GFNTrainerRTB(hps, self.algo, self.rng, self.device, self.env, self.ctx)
 
-        loaded_dict = torch.load(load_path,map_location='cpu')
+        # weights_only defaults to True on torch>=2.6 and rejects the pickled EasyDict 'hps' /
+        # optimizer 'opt' below.
+        loaded_dict = torch.load(load_path,map_location='cpu', weights_only=False)
         self.pretrain_hps, self.start_step, self.opt = loaded_dict['hps'], loaded_dict['step'], loaded_dict['opt']
         
         model_dict = loaded_dict['models_state_dict'][0]
@@ -229,9 +231,11 @@ class FineTuner():
         self.reward = RewardFineTune(conditional_range_dict,ft_conditionals_dict, cond_prop_var, hps["reward_aggergation"], hps['atomenv_dictionary'], hps['zinc_rad_scale'], hps)
 
         # self.gfn_trainer = SEHFragTrainer(hps,self.device)
-        self.gfn_trainer = GFNTrainer(hps, self.algo, self.rng, self.device, self.env, self.ctx) 
+        self.gfn_trainer = GFNTrainer(hps, self.algo, self.rng, self.device, self.env, self.ctx)
 
-        loaded_dict = torch.load(load_path,map_location='cpu')
+        # weights_only defaults to True on torch>=2.6 and rejects the pickled EasyDict 'hps' /
+        # optimizer 'opt' below.
+        loaded_dict = torch.load(load_path,map_location='cpu', weights_only=False)
         self.pretrain_hps, self.start_step, self.opt = loaded_dict['hps'], loaded_dict['step'], loaded_dict['opt']
 
         model_dict = loaded_dict['models_state_dict'][0]

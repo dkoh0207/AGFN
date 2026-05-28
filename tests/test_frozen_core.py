@@ -68,6 +68,19 @@ def test_helper_accepts_comma_string():
     assert g.graph["frozen_growth_sites"] == {0, 2, 4}
 
 
+def test_helper_accepts_scalar_int():
+    # A single index is a natural YAML scalar (`allowed_growth_atoms: 0`); must not crash.
+    g = build_frozen_seed_graph(_ctx(), "c1ccccc1", allowed_growth_atoms=0)
+    assert g.graph["frozen_growth_sites"] == {0}
+
+
+def test_helper_blank_string_treated_as_unset():
+    # A blank YAML value means "no restriction" (whole core frozen, all atoms grow),
+    # not "all atoms frozen".
+    g = build_frozen_seed_graph(_ctx(), "c1ccccc1", allowed_growth_atoms="")
+    assert g.graph["frozen_growth_sites"] == set(range(6))
+
+
 def test_helper_rejects_both_lists():
     _assert_raises(
         lambda: build_frozen_seed_graph(_ctx(), "c1ccccc1", allowed_growth_atoms=[0], frozen_atoms=[1]),
