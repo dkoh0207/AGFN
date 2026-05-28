@@ -276,6 +276,8 @@ class GraphBuildingEnv:
             The list of parent-action pairs that lead to `g`.
         """
         parents: List[Tuple[GraphAction, Graph]] = []
+        # Frozen core: skip parents that would undo a core add/edit (see count_backward_transitions).
+        seed_size = g.graph.get("frozen_seed_size", 0)
         # Count node degrees
         degree: Dict[int, int] = defaultdict(int)
         for a, b in g.edges:
@@ -292,6 +294,8 @@ class GraphBuildingEnv:
             parents.append((a, new_g))
 
         for a, b in g.edges:
+            if seed_size and a < seed_size and b < seed_size:
+                continue  # frozen core bond: removal / attr-removal are not valid parents
             if degree[a] > 1 and degree[b] > 1 and len(g.edges[(a, b)]) == 0:
                 # Can only remove edges connected to non-leaves and without
                 # attributes (the agent has to remove the attrs, then remove
@@ -306,6 +310,8 @@ class GraphBuildingEnv:
                 )
 
         for i in g.nodes:
+            if seed_size and i < seed_size:
+                continue  # frozen core atom: node / attr removals are not valid parents
             # Can only remove leaf nodes and without attrs (except 'v'),
             # and without edges with attrs.
             if degree[i] == 1 and len(g.nodes[i]) == 1:
@@ -339,11 +345,18 @@ class GraphBuildingEnv:
         # the same parent. To do so, we need to enumerate (unique) parents and count how many there are:
         if check_idempotent:
             return len(self.parents(g))
+        # Frozen core: forward generation never adds/edits core atoms or the bonds among them, so
+        # those backward transitions are unreachable and must not be counted -- otherwise uniform
+        # P_B = 1/n_back is normalized over a larger-than-real parent set, biasing trajectory
+        # balance. seed_size == 0 (the default) leaves the count unchanged. Mirrors the step guards.
+        seed_size = g.graph.get("frozen_seed_size", 0)
         c = 0
         deg = [g.degree[i] for i in range(len(g.nodes))]
         has_connected_edge_attr = [False] * len(g.nodes)
         bridges = g.bridges()
         for a, b in g.edges:
+            if seed_size and a < seed_size and b < seed_size:
+                continue  # frozen core bond: neither it nor its attrs can be removed
             if deg[a] > 1 and deg[b] > 1 and len(g.edges[(a, b)]) == 0:
                 # Can only remove edges connected to non-leaves and without
                 # attributes (the agent has to remove the attrs, then remove
@@ -356,6 +369,8 @@ class GraphBuildingEnv:
                 has_connected_edge_attr[a] = True
                 has_connected_edge_attr[b] = True
         for i in g.nodes:
+            if seed_size and i < seed_size:
+                continue  # frozen core atom: cannot be removed and its attrs are immutable
             if deg[i] == 1 and len(g.nodes[i]) == 1 and not has_connected_edge_attr[i]:
                 c += 1
             c += len(g.nodes[i]) - 1  # One action per node attr, except 'v'

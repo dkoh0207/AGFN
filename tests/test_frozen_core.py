@@ -203,6 +203,35 @@ def test_step_unconstrained_graph_allows_addnode():
     assert gp.has_edge(1, 6)
 
 
+# --------------------------------------------------------------------------- #
+# 4. backward-transition counting respects the frozen core (uniform P_B)
+# --------------------------------------------------------------------------- #
+def _grown(env, g):
+    """Attach one new atom at growth site 0, returning the grown graph."""
+    return env.step(g, GraphAction(GraphActionType.AddNode, source=0, value="C"))
+
+
+def test_count_backward_excludes_frozen_core():
+    ctx, env = _ctx(), GraphBuildingEnv()
+    gf = _grown(env, build_frozen_seed_graph(ctx, "c1ccccc1", allowed_growth_atoms=[0]))
+    # The only reachable parent in the frozen MDP is "remove the one grown leaf atom".
+    assert env.count_backward_transitions(gf) == 1
+
+
+def test_count_backward_noop_without_frozen_core():
+    ctx, env = _ctx(), GraphBuildingEnv()
+    gp = _grown(env, ctx.mol_to_graph(Chem.MolFromSmiles("c1ccccc1")))  # structurally identical, no spec
+    # Unconstrained: the benzene ring bonds/attrs are still counted, so strictly more parents.
+    assert env.count_backward_transitions(gp) > 1
+
+
+def test_parents_excludes_frozen_core():
+    ctx, env = _ctx(), GraphBuildingEnv()
+    gf = _grown(env, build_frozen_seed_graph(ctx, "c1ccccc1", allowed_growth_atoms=[0]))
+    # parents() backs count_backward_transitions(check_idempotent=True); must agree.
+    assert len(env.parents(gf)) == 1
+
+
 if __name__ == "__main__":
     mod = sys.modules[__name__]
     tests = sorted(n for n in dir(mod) if n.startswith("test_"))
