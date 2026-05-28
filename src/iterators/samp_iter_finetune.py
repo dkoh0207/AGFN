@@ -359,6 +359,14 @@ class FTSampling_Iterator(IterableDataset):
                             gfn_batch.valid_percent = batch_valid_pct
                             gfn_batch.unique_percent = batch_unique_pct
                             gfn_batch.novel_percent = batch_novel_pct
+                            # Running hall-of-fame averages (after this batch was added above):
+                            # mean reward/affinity of the current top-10/top-100. Logged each
+                            # iteration so the notebook can plot the monotonic improvement curves.
+                            topk_avgs = self.top_k_tracker.averages()
+                            gfn_batch.top10_reward = topk_avgs["top10_reward"]
+                            gfn_batch.top100_reward = topk_avgs["top100_reward"]
+                            gfn_batch.top10_affinity = topk_avgs["top10_affinity"]
+                            gfn_batch.top100_affinity = topk_avgs["top100_affinity"]
                             gfn_batch.avg_batch_len = (avg_batch_len)/len(online_trajs)
                             gfn_batch.avg_fwd_logprob = avg_fwd_logprob/len(online_trajs)
                             gfn_batch.avg_bck_logprob = avg_bck_logprob/len(online_trajs)

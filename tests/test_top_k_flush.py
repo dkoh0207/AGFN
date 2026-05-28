@@ -114,8 +114,33 @@ def test_generator_exit_reaches_finally_once():
     print("PASS test_generator_exit_reaches_finally_once")
 
 
+def test_averages_means_and_nan():
+    import math
+
+    # rewards 0..4, affinities 0..-4; <10 entries so top-10 == top-100 == all of them.
+    a = _populated_tracker(5).averages()
+    assert abs(a["top10_reward"] - 2.0) < 1e-9, a
+    assert abs(a["top100_reward"] - 2.0) < 1e-9, a
+    assert abs(a["top10_affinity"] - (-2.0)) < 1e-9, a
+    assert abs(a["top100_affinity"] - (-2.0)) < 1e-9, a
+
+    # empty tracker -> every bucket NaN
+    ae = TopKTracker(ks=(10, 100)).averages()
+    assert all(math.isnan(v) for v in ae.values()), ae
+
+    # rewards present but no affinities -> reward buckets real, affinity buckets NaN
+    noaff = TopKTracker(ks=(10, 100))
+    for i in range(3):
+        noaff.add(smiles="N" * (i + 1), reward=float(i), affinity=None, iteration=i)
+    an = noaff.averages()
+    assert abs(an["top10_reward"] - 1.0) < 1e-9, an  # mean(0,1,2)
+    assert math.isnan(an["top10_affinity"]) and math.isnan(an["top100_affinity"]), an
+    print("PASS test_averages_means_and_nan")
+
+
 if __name__ == "__main__":
     test_flush_helper_writes_all_entries()
     test_final_flush_on_teardown()
     test_generator_exit_reaches_finally_once()
+    test_averages_means_and_nan()
     print("ALL PASS")

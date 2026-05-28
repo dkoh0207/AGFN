@@ -64,6 +64,25 @@ class TopKTracker:
             "top_by_affinity": {k: [strip(e) for e in aff_sorted[:k]] for k in self.ks},
         }
 
+    def averages(self):
+        """Mean reward of the top-10/top-100 (ranked by reward) and mean affinity of the
+        top-10/top-100 (ranked by affinity). Returns NaN for an empty bucket, or -- for the
+        affinity buckets -- when no entry has a docking score. Cheap: heaps are bounded at
+        ``max_k``. Used to log monotonically-improving hall-of-fame curves during training.
+        """
+        snap = self.snapshot()
+
+        def _mean(entries, idx):
+            vals = [e[idx] for e in entries if e[idx] is not None]
+            return sum(vals) / len(vals) if vals else float("nan")
+
+        return {
+            "top10_reward": _mean(snap["top_by_reward"].get(10, []), 1),
+            "top100_reward": _mean(snap["top_by_reward"].get(100, []), 1),
+            "top10_affinity": _mean(snap["top_by_affinity"].get(10, []), 2),
+            "top100_affinity": _mean(snap["top_by_affinity"].get(100, []), 2),
+        }
+
     def save(self, out_dir: str):
         """Write the two top-``max_k`` buckets to flat CSVs in ``out_dir``."""
         os.makedirs(out_dir or ".", exist_ok=True)
