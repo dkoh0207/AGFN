@@ -3,7 +3,22 @@ finetuning:
   wandb_project_name: "GFN_Finetune"
   # seed_smiles: 'CC1(C)CC(=O)C2=C(C1)Nc1[nH]c(=O)[nH]c(=O)c1[C@H]2c1ccc(-c2cc(Cl)ccc2Cl)o1' #'O=C(Nc1ccc(Cl)nc1)c1cncc(OCc2ccn[nH]2)n1'
   # seed_scaffold: null #"CNc1nc(OCc2cncn2C)cnc1C(N)=O"
-  task: 'QedxSaxDock' 
+  task: "QedxSaxDock"
+  # BBB gate (predict_proba already in [0,1] -> clamp at the threshold)
+  bbb_constraint: true
+  bbb_model_path: "./saved_models/autogluon/bbb_maccs_descriptors"
+  bbb_mode: "clamp"         # clamp | hard | soft
+  bbb_threshold: 0.9        # clamp ceiling (and hard-mode step threshold)
+  bbb_fail_reward: 1.e-30
+  bbb_positive_class: 1
+  # Solubility gate (raw LogS -> soft smoothstep over [sol_low, sol_high]; higher = better)
+  sol_constraint: true
+  sol_model_path: "./saved_models/autogluon/solubility_autogluon"
+  sol_mode: "soft"          # soft | hard | clamp
+  sol_low: -6.0             # LogS at/below which the factor is 0
+  sol_high: -4.0            # LogS at/above which the factor is 1
+  sol_threshold: -4.0       # used only when sol_mode is hard/clamp
+  sol_fail_reward: 1.e-30
   task_possible_range: [-20,0] 
   target_name: "braf" #"braf" #"fa7" #"parp1" # "jak2" #
   unidock_search_mode: "fast"  # fast | balance | detail
@@ -56,7 +71,7 @@ finetuning:
   layerwise_lr: True
   perturb_logZ: true
   atoms: ['Br', 'C', 'Cl', 'F', 'I', 'N', 'O', 'S']
-  log_dir: '/home/aid/dkoh/log/generative/trash'
+  log_dir: '/home/aid/dkoh/log/generative/BBB'
   diversity_filter: True
   offline_data: False
   offline_df_path: "./data/finetune_offline_data.csv"
@@ -105,6 +120,6 @@ finetuning:
   tb_p_b_is_parameterized: True
   num_thermometer_dim: 16
   sample_temp: 1
-  checkpoint_every: 200       # how often (iters) to save the model state .pt
+  checkpoint_every: 500       # how often (iters) to save the model state .pt
   top_k_save_every: 100        # how often (iters) to flush the top-K hall of fame; also flushed once at run end
   
