@@ -153,6 +153,60 @@ class FTSampling_Iterator(IterableDataset):
         novel_pct = 100.0 * len(novel) / n_valid
         return valid_pct, unique_pct, novel_pct
 
+    def _bbb_batch_metrics(self):
+        bbb_probs = getattr(self.reward, "last_bbb_probabilities", None)
+        bbb_pass = getattr(self.reward, "last_bbb_pass_mask", None)
+        if bbb_probs is None or bbb_pass is None:
+            return None
+        bbb_probs = np.asarray(bbb_probs, dtype=np.float64)
+        bbb_pass = np.asarray(bbb_pass, dtype=bool)
+        bbb_score_mask = getattr(self.reward, "last_bbb_score_mask", None)
+        if bbb_score_mask is None:
+            bbb_score_mask = np.isfinite(bbb_probs)
+        else:
+            bbb_score_mask = np.asarray(bbb_score_mask, dtype=bool)
+
+        pct_pass = 100.0 * float(np.average(bbb_pass)) if len(bbb_pass) else np.nan
+        avg_score = (
+            float(np.average(bbb_probs[bbb_score_mask]))
+            if np.any(bbb_score_mask) else np.nan
+        )
+        return avg_score, pct_pass
+
+    def _attach_bbb_metrics(self, gfn_batch, metrics):
+        if metrics is None:
+            return
+        avg_score, pct_pass = metrics
+        gfn_batch.avg_bbb_score = avg_score
+        gfn_batch.percent_bbb_passing_threshold = pct_pass
+
+    def _solubility_batch_metrics(self):
+        sol_vals = getattr(self.reward, "last_sol_values", None)
+        sol_pass = getattr(self.reward, "last_sol_pass_mask", None)
+        if sol_vals is None or sol_pass is None:
+            return None
+        sol_vals = np.asarray(sol_vals, dtype=np.float64)
+        sol_pass = np.asarray(sol_pass, dtype=bool)
+        sol_score_mask = getattr(self.reward, "last_sol_score_mask", None)
+        if sol_score_mask is None:
+            sol_score_mask = np.isfinite(sol_vals)
+        else:
+            sol_score_mask = np.asarray(sol_score_mask, dtype=bool)
+
+        pct_pass = 100.0 * float(np.average(sol_pass)) if len(sol_pass) else np.nan
+        avg_logs = (
+            float(np.average(sol_vals[sol_score_mask]))
+            if np.any(sol_score_mask) else np.nan
+        )
+        return avg_logs, pct_pass
+
+    def _attach_solubility_metrics(self, gfn_batch, metrics):
+        if metrics is None:
+            return
+        avg_logs, pct_pass = metrics
+        gfn_batch.avg_sol_logS = avg_logs
+        gfn_batch.percent_sol_passing_threshold = pct_pass
+
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         self._wid = worker_info.id if worker_info is not None else 0
@@ -211,10 +265,14 @@ class FTSampling_Iterator(IterableDataset):
                             offline_rew = torch.Tensor(offline_rew).unsqueeze(dim=1)
                             if self.hps['task'] in self.task_model_reward_funcs:
                                 normalized_task_rew_online, true_task_score_online = self.reward.task_reward(self.hps.task, self.task_model, online_mols)
+                                online_bbb_metrics = self._bbb_batch_metrics()
+                                online_sol_metrics = self._solubility_batch_metrics()
                                 normalized_task_rew_offline, true_task_score_offline = self.reward.task_reward(self.hps.task, self.task_model,
                                                                                 offline_mols)
                             else:
                                 normalized_task_rew_online, true_task_score_online = self.reward.task_reward(self.hps.task, self.task_model, online_mols)
+                                online_bbb_metrics = self._bbb_batch_metrics()
+                                online_sol_metrics = self._solubility_batch_metrics()
                                 normalized_task_rew_offline, true_task_score_offline = self.reward.task_reward(self.hps.task, self.task_model, offline_mols)
                             if self.hps.task_rewards_only:
                                 flat_rewards_online, flat_rewards_offline =  torch.Tensor(normalized_task_rew_online), torch.Tensor(normalized_task_rew_offline)
@@ -260,6 +318,8 @@ class FTSampling_Iterator(IterableDataset):
                             gfn_batch.online_qed = np.average(online_rew_tup[1][3][0])
                             gfn_batch.avg_task_reward_online = np.average(normalized_task_rew_online) 
                             gfn_batch.avg_task_reward_offline = np.average(normalized_task_rew_offline)  
+                            self._attach_bbb_metrics(gfn_batch, online_bbb_metrics)
+                            self._attach_solubility_metrics(gfn_batch, online_sol_metrics)
                             if self.hps.task is not None:
                                 gfn_batch.avg_task_score_online = np.average(true_task_score_online)
                                 gfn_batch.avg_task_score_offline = np.average(true_task_score_offline)
@@ -317,6 +377,8 @@ class FTSampling_Iterator(IterableDataset):
                                 normalized_task_rew, true_task_score = self.reward.task_reward(self.hps.task, self.task_model, mols)
                             else:
                                 normalized_task_rew, true_task_score = self.reward.task_reward(self.hps.task, mols)
+                            bbb_metrics = self._bbb_batch_metrics()
+                            sol_metrics = self._solubility_batch_metrics()
                             if self.hps['task_rewards_only']:
                                 flat_rewards =  torch.Tensor(normalized_task_rew) #  #torch.mul(rew,flat_rewards_task) #flat_rewards_qed
                             else:
@@ -381,6 +443,8 @@ class FTSampling_Iterator(IterableDataset):
                         
                             gfn_batch.avg_zinc_rad = np.average(rew_tup[3])
                             gfn_batch.avg_task_reward = np.average(normalized_task_rew) #torch.mean(flat_rewards_task).item()
+                            self._attach_bbb_metrics(gfn_batch, bbb_metrics)
+                            self._attach_solubility_metrics(gfn_batch, sol_metrics)
                             if self.hps.task is not None:
                                 gfn_batch.avg_task_score = np.average(true_task_score)
                             else:

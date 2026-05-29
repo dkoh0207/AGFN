@@ -95,7 +95,19 @@ def train(hps, trainer, train_loader, rank, run_config, run_name, world_size=1):
                         "Zinc Radius Online":gfn_batch.avg_zinc_rad,
                         "Train_iter":i,
                         "Time elapsed":time.time()-t0}
-                
+
+                if hps.get("bbb_constraint", False):
+                    info_vals["Percentage of generated molecules passing BBB threshold"] = getattr(
+                        gfn_batch, "percent_bbb_passing_threshold", float("nan"))
+                    info_vals["Average BBB score"] = getattr(
+                        gfn_batch, "avg_bbb_score", float("nan"))
+
+                if hps.get("sol_constraint", False):
+                    info_vals["Percentage of generated molecules passing solubility threshold"] = getattr(
+                        gfn_batch, "percent_sol_passing_threshold", float("nan"))
+                    info_vals["Average solubility LogS"] = getattr(
+                        gfn_batch, "avg_sol_logS", float("nan"))
+
                 if (hps.get('objective', None)=='property_targeting'):
                     if(hps.subtype=='new_props'):
                         info_vals.update({f"Avg new prop {hps.new_props.added_prop}": gfn_batch.avg_new_prop }) 
