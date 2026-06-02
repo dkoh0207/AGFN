@@ -161,30 +161,27 @@ python ./src/agfn/metrics.py [finetuned_model_path] --ntrajs [#samples] --do_hyp
 
 This pipeline enables the generation of de novo molecules for a target protein, with molecular docking evaluation using **[Uni-Dock](https://github.com/dptech-corp/Uni-Dock)** (GPU-accelerated) as rewards. Docking runs **in-process** in the training session via the `unidock_tools` API.
 
-Docking needs the `unidock` engine available in your environment. Set up a dedicated env cloned from your working AGFN env, so the engine lives in-env and training never reaches into a separate env:
+Docking needs the `unidock` engine available in-env. The canonical **`agfn`** env already ships it (the Uni-Dock binary + the `unidock_tools` wrapper) alongside the AutoGluon stack for the BBB/solubility gates, so there is no second env to manage. If you ever need to (re)install the engine into a fresh AGFN env:
 
 ```bash
-# 1. Clone the working env (keeps the original AGFN env untouched).
-conda create --name agfn-no-vina --clone agfn
-
-# 2. Install ONLY Uni-Dock's native libs (these are pip-stack-safe). Pinning
+# 1. Install ONLY Uni-Dock's native libs (these are pip-stack-safe). Pinning
 #    cuda-version=12.9 matches the cuda129 unidock build below.
-conda install -n agfn-no-vina -c conda-forge \
+conda install -n agfn -c conda-forge \
   "cuda-version=12.9" "libcurand>=10.3.10.19,<11" \
   "libboost>=1.86,<1.87" "libboost-devel>=1.86" "libboost-headers>=1.86" "icu>=78"
 
-# 3. Install just the unidock BINARY with --no-deps. The conda `unidock` package
+# 2. Install just the unidock BINARY with --no-deps. The conda `unidock` package
 #    bundles a Python wrapper that depends on numpy/pandas/rdkit/openmm; --no-deps
 #    avoids conda overwriting this env's pip-installed torch/rdkit/numpy stack.
-conda install -n agfn-no-vina -c conda-forge "unidock=1.1.3=cuda129_h10d1193_2" --no-deps
+conda install -n agfn -c conda-forge "unidock=1.1.3=cuda129_h10d1193_2" --no-deps
 
-# 4. (Re)install the lean unidock_tools 1.1.3 wrapper that drives the binary.
+# 3. (Re)install the lean unidock_tools 1.1.2 wrapper that drives the binary.
 #    Tag 1.1.2 avoids the openmm import the bundled 1.1.3 wrapper pulls in.
-/path/to/envs/agfn-no-vina/bin/pip install --force-reinstall --no-deps \
+/path/to/envs/agfn/bin/pip install --force-reinstall --no-deps \
   "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools"
 ```
 
-`openbabel-wheel` and the `unidock_tools` wrapper are already part of the AGFN requirements (inherited by the clone). With the env activated, `unidock` resolves from `$CONDA_PREFIX/bin` — no PATH edits or second env. Run the docking pipeline from the `agfn-no-vina` env.
+`openbabel-wheel` and the `unidock_tools` wrapper are already part of the AGFN requirements. With the env activated, `unidock` resolves from `$CONDA_PREFIX/bin`. For notebooks that don't activate the env, the docking code prepends the running interpreter's own `$CONDA_PREFIX/bin` to `PATH` and the `agfn` Jupyter kernelspec sets it too, so `shutil.which("unidock")` still resolves. Run the docking pipeline from the `agfn` env.
 
 ### 🔧 Configuration
 

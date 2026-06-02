@@ -11,10 +11,17 @@ Adapted from the reference implementation in RxnFlow
 those straight to ``UniDock`` and skip the pdb->pdbqt conversion and pybel-based pocket-center
 detection that RxnFlow performs.
 
-The ``unidock`` binary is installed in the same conda env as the training stack (the
-``agfn-no-vina`` env), so it resolves from ``$CONDA_PREFIX/bin`` with no PATH manipulation.
+The ``unidock`` binary ships in the same conda env as the training stack (the canonical
+``agfn`` env), at ``$CONDA_PREFIX/bin/unidock``. ``unidock_tools`` resolves it via
+``shutil.which`` (i.e. ``PATH``), so :func:`_ensure_env_bin_on_path` puts this interpreter's own
+``$CONDA_PREFIX/bin`` on ``PATH`` before docking. That guard is needed because a Jupyter kernel
+launched by absolute-path python (the standard ``ipykernel`` install) leaves the env's ``bin/``
+off ``PATH`` even though its site-packages are importable — so without it ``import
+unidock_tools`` succeeds but ``shutil.which("unidock")`` returns ``None``.
 """
 
+import os
+import sys
 import tempfile
 import multiprocessing
 from pathlib import Path
@@ -23,6 +30,22 @@ from typing import List, Optional, Tuple
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem.rdDistGeom import EmbedMolecule, srETKDGv3
+
+
+def _ensure_env_bin_on_path() -> None:
+    """Put the running interpreter's own ``$CONDA_PREFIX/bin`` on ``PATH`` (idempotent).
+
+    ``unidock_tools`` finds the compiled ``unidock`` binary via ``shutil.which`` (which reads
+    ``PATH``, not ``sys.path``) and launches it as a child process. A Jupyter kernel started by
+    absolute-path python puts the env's site-packages on ``sys.path`` but leaves the env's
+    ``bin/`` off ``PATH`` unless the env was activated — so the binary lookup fails even though
+    ``import unidock_tools`` works. Scoped to this process and adds only this env's own ``bin``,
+    so nothing leaks past the conda env boundary.
+    """
+    env_bin = os.path.join(sys.prefix, "bin")
+    parts = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    if env_bin not in parts:
+        os.environ["PATH"] = os.pathsep.join([env_bin, *parts])
 
 
 def run_etkdg_func(args: Tuple[str, Path]) -> Optional[Path]:
@@ -72,6 +95,10 @@ def dock_smiles(
     coordinates are absolute, in the receptor's frame. The molblock is captured here, before the
     ``TemporaryDirectory`` is torn down.
     """
+    # Make sure this interpreter's own $CONDA_PREFIX/bin is on PATH so unidock_tools can find the
+    # `unidock` binary even when running under a Jupyter kernel that didn't activate the env.
+    _ensure_env_bin_on_path()
+
     # Imported here (lazily) so importing this module stays cheap and any unidock_tools issue
     # surfaces at dock time with a clear traceback rather than at import.
     from unidock_tools.application.unidock_pipeline import UniDock

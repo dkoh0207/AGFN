@@ -8,9 +8,10 @@ conda activate agfn
 python ./src/apps/docking/denovo/denovo_driver.py ./src/config/denovo.yml
 ```
 
-`agfn-no-vina` also works for runs **without** the BBB constraint, but it has no
-AutoGluon installed; with `bbb_constraint: true` it now aborts at startup with an
-`ImportError` (it previously degraded silently, logging `0.0` / `nan` BBB metrics).
+`agfn` is the single environment for de novo docking runs; it carries both the
+Uni-Dock engine and the AutoGluon stack. With `bbb_constraint: true`, a run aborts at
+startup with an `ImportError` if the AutoGluon stack is missing (it never degrades
+silently to `0.0` / `nan` BBB metrics).
 
 ## 1. Default UniDock Training
 
@@ -77,7 +78,7 @@ If `initial_scaffold` is set, `seed_smiles` and `seed_scaffold` are ignored. Off
 ## 4. UniDock Training With BBB Constraint
 
 The `agfn` environment already ships the minimal AutoGluon inference stack. If you
-need to recreate it (e.g. from a fresh clone of `agfn-no-vina`):
+need to recreate it in a fresh AGFN env:
 
 ```bash
 python -m pip install \

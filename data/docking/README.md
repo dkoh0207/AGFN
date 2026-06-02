@@ -26,11 +26,11 @@ reward via `(affinity - 10) / -11 - 1` (an affinity of −10 → reward 0, −1 
 
 ## Running de novo docking for a target
 
-Prerequisite: the `agfn-no-vina` conda env with the `unidock` engine installed in-env (see the
+Prerequisite: the `agfn` conda env with the `unidock` engine installed in-env (see the
 "De Novo Design" section of the repo `README.md`). Activate it so `unidock` is on `PATH`:
 
 ```bash
-conda activate agfn-no-vina
+conda activate agfn
 ```
 
 There is one ready-to-run config per target in `src/config/` (`denovo_<target>.yml`). From the
