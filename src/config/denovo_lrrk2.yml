@@ -1,8 +1,6 @@
 finetuning:
   type: 'rtb'
   wandb_project_name: "GFN_Finetune"
-  # seed_smiles: 'CC1(C)CC(=O)C2=C(C1)Nc1[nH]c(=O)[nH]c(=O)c1[C@H]2c1ccc(-c2cc(Cl)ccc2Cl)o1' #'O=C(Nc1ccc(Cl)nc1)c1cncc(OCc2ccn[nH]2)n1'
-  # seed_scaffold: null #"CNc1nc(OCc2cncn2C)cnc1C(N)=O"
   task: "QedxSaxDock"
   # BBB gate (predict_proba already in [0,1] -> clamp at the threshold)
   bbb_constraint: true

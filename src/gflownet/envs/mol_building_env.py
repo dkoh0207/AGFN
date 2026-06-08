@@ -29,6 +29,15 @@ except ImportError:
 
 DEFAULT_CHIRAL_TYPES = [ChiralType.CHI_UNSPECIFIED, ChiralType.CHI_TETRAHEDRAL_CW, ChiralType.CHI_TETRAHEDRAL_CCW]
 
+# Reserved atom-map range used to tag the frozen ("seed core") atoms of a molecule so the core
+# stays identifiable in the emitted RDKit mol. graph_to_mol ends with a canonical-SMILES round-trip
+# (MolFromSmiles(MolToSmiles(...))) that REORDERS atoms, so an RDKit atom index no longer equals its
+# networkx node label. Stamping core atom `i` with `FROZEN_MAP_BASE + i` (the seed node label, which
+# == its RWMol index) gives a passive label that rides through the round-trip; the core is then found
+# by GetAtomMapNum() instead of by index. Mirrors RxnFlow's src/rxnflow/envs/env.py. The model's atom
+# set never uses map numbers, so a high base keeps the two number-spaces from colliding.
+FROZEN_MAP_BASE = 1000
+
 class BatchList:
     def __init__(self, l):
         self._list = l
@@ -601,7 +610,7 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
             )
         return g
 
-    def graph_to_mol(self, g: Graph) -> Mol:
+    def graph_to_mol(self, g: Graph, tag_frozen: bool = False) -> Mol:
         mp = Chem.RWMol()
         mp.BeginBatchEdit()
         for i in range(len(g.nodes)):
@@ -621,6 +630,15 @@ class MolBuildingEnvContext(GraphBuildingEnvContext):
             d = g.edges[e]
             mp.AddBond(e[0], e[1], d.get("type", BondType.SINGLE))
         mp.CommitBatchEdit()
+        # Opt-in frozen-core tagging (default off, so every existing caller is byte-for-byte
+        # unchanged). Stamp each seed-core atom with FROZEN_MAP_BASE + node-label BEFORE the
+        # canonical round-trip below; the map numbers survive it, so the returned mol's core is
+        # recoverable via frozen_core_atoms() even though the round-trip reorders atom indices.
+        # Atoms were added in node-label order, so core node label i == RWMol atom index i.
+        frozen_seed_size = g.graph.get("frozen_seed_size", 0)
+        if tag_frozen and frozen_seed_size:
+            for i in range(frozen_seed_size):
+                mp.GetAtomWithIdx(i).SetAtomMapNum(FROZEN_MAP_BASE + i)
         Chem.SanitizeMol(mp)
         # Not sure why, but this seems to find errors that SanitizeMol doesn't, and it saves us trouble downstream,
         # since MolFromSmiles returns None if the SMILES encoding of the molecule is invalid, which seemingly happens
@@ -723,3 +741,44 @@ def build_frozen_seed_graph(ctx, smiles, allowed_growth_atoms=None, frozen_atoms
     g.graph["frozen_seed_size"] = n
     g.graph["frozen_growth_sites"] = growth
     return g
+
+
+def frozen_core_atoms(mol: Mol) -> List[int]:
+    """RDKit atom indices of the frozen seed core in ``mol``.
+
+    ``mol`` must come from ``graph_to_mol(g, tag_frozen=True)``: core atoms carry an atom-map
+    number ``>= FROZEN_MAP_BASE``, which survives the canonical-SMILES round-trip even though the
+    atom *indices* are reshuffled by it. Returned in ascending RDKit-index order; highlight these
+    (not ``range(N)``) to mark the core. Empty when the mol carries no frozen tags.
+    """
+    return [a.GetIdx() for a in mol.GetAtoms() if a.GetAtomMapNum() >= FROZEN_MAP_BASE]
+
+
+def frozen_core_index_map(mol: Mol) -> dict:
+    """Map each frozen core atom's current RDKit index -> its original seed atom index.
+
+    The seed index is recovered as ``GetAtomMapNum() - FROZEN_MAP_BASE`` (the node label the atom
+    held in the seed graph). Useful for checking the core landed where expected after the
+    order-scrambling round-trip in ``graph_to_mol``.
+    """
+    return {
+        a.GetIdx(): a.GetAtomMapNum() - FROZEN_MAP_BASE
+        for a in mol.GetAtoms()
+        if a.GetAtomMapNum() >= FROZEN_MAP_BASE
+    }
+
+
+def strip_frozen_maps(mol: Mol) -> Mol:
+    """Return a copy of ``mol`` with the reserved frozen map numbers cleared (for output/reward).
+
+    Tagging an atom forces bracket notation in SMILES (``N`` -> ``[NH2:1000]``), which makes its
+    hydrogens explicit; clearing the map number alone does not undo that, so we re-perceive the
+    molecule via a SMILES round-trip. The result is indistinguishable from the untagged molecule.
+    Verbatim from RxnFlow's ``strip_frozen_maps`` (src/rxnflow/envs/env.py).
+    """
+    mol = Chem.Mol(mol)
+    for a in mol.GetAtoms():
+        if a.GetAtomMapNum() >= FROZEN_MAP_BASE:
+            a.SetAtomMapNum(0)
+    reperceived = Chem.MolFromSmiles(Chem.MolToSmiles(mol))
+    return reperceived if reperceived is not None else mol
