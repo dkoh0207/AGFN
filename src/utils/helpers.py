@@ -89,50 +89,105 @@ def get_bemis_murcko_scaffold(smiles):
 
 class DiversityFilter:
     """
-    Implements Diversity Filter as described in the paper: 
+    Diversity Filter (REINVENT-style memory bucket) as described in
     https://jcheminf.biomedcentral.com/articles/10.1186/s13321-020-00473-0
+
+    An identity key is counted across the run; once a key has been generated more than
+    ``bucket_size`` times, every further occurrence has its reward truncated to ~``eps``.
+
+    ``identity`` selects what counts as "the same" molecule:
+      - ``"scaffold"`` (default): the Bemis-Murcko scaffold (original behavior). This is
+        degenerate under a fixed seed core -- every molecule shares one scaffold, so after
+        ``bucket_size`` molecules essentially everything is penalized -- so prefer
+        ``"canonical_smiles"`` for seed / frozen-core runs.
+      - ``"canonical_smiles"``: the whole molecule. Callers pass canonical SMILES (the
+        iterator already does, via ``Chem.MolToSmiles``), so the SMILES string is used
+        directly as the key -- distinct molecules that share a scaffold stay distinct.
+
+    ``max_unique`` bounds ``bucket_history`` (which grows by one entry per distinct key) so a
+    long molecule-level run cannot exhaust memory: when the dict exceeds the cap (plus a small
+    slack to amortize the prune), the lowest-count entries -- the diverse, sub-threshold
+    molecules -- are evicted, retaining the high-count ones we still want to penalize.
+    ``None`` disables the cap.
     """
+
+    _IDENTITIES = ("scaffold", "canonical_smiles")
+
     def __init__(
-        self, 
-        bucket_size = 10
+        self,
+        bucket_size=10,
+        identity="scaffold",
+        max_unique=1_000_000,
     ):
-        # Track the number of times a given Bemis-Murcko scaffold has been generated
+        if identity not in self._IDENTITIES:
+            raise ValueError(
+                f"DiversityFilter identity must be one of {self._IDENTITIES}, got {identity!r}"
+            )
+        # Track how many times a given identity key (scaffold or whole molecule) has appeared.
         self.bucket_history = dict()
         self.bucket_size = bucket_size
+        self.identity = identity
+        self.max_unique = max_unique
 
-    def update(
-        self,
-        smiles
-    ):
-        """
-        Update the bucket history based on the sampled (or hallucinated) batch of SMILES.
-        """
-        # Get the Bemis-Murcko scaffold for each SMILES
-        scaffolds = [get_bemis_murcko_scaffold(smiles) for smiles in smiles]
-        for scaf in scaffolds:
-            if scaf in self.bucket_history:
-                self.bucket_history[scaf] += 1
-            else:
-                self.bucket_history[scaf] = 1
+    def _key(self, smiles):
+        """Identity key for a (canonical) SMILES: its Bemis-Murcko scaffold or the molecule
+        itself, per ``self.identity``."""
+        if self.identity == "scaffold":
+            return get_bemis_murcko_scaffold(smiles)
+        return smiles  # canonical_smiles: caller passes canonical SMILES, use it directly
 
-    def penalize_reward(
-        self,
-        smiles,
-        rewards
-    ):
+    def _evict_to_cap(self):
+        """Bound ``bucket_history`` to ``max_unique`` by dropping the lowest-count keys.
+
+        A small slack margin amortizes the O(n log n) prune across many batches instead of
+        running it every batch once the cap is reached. Lowest-count keys are the diverse,
+        sub-threshold molecules, so evicting them never weakens the penalty.
         """
-        Penalize sampled (or hallucinated) SMILES based on the bucket history.
-        """
-        # If a given scaffold has been generated more than the bucket size, truncate the reward to 0.0
+        if self.max_unique is None:
+            return
+        prune_at = self.max_unique + max(1, self.max_unique // 10)
+        if len(self.bucket_history) > prune_at:
+            kept = sorted(self.bucket_history.items(), key=lambda kv: kv[1], reverse=True)
+            self.bucket_history = dict(kept[: self.max_unique])
+
+    def update(self, smiles):
+        """Update the bucket history with a sampled (or hallucinated) batch of canonical SMILES."""
+        for s in smiles:
+            key = self._key(s)
+            self.bucket_history[key] = self.bucket_history.get(key, 0) + 1
+        self._evict_to_cap()
+
+    def penalize_reward(self, smiles, rewards):
+        """Truncate the reward of any molecule whose identity key has been generated more than
+        ``bucket_size`` times to ~``eps``; pass the rest through unchanged."""
         if len(smiles) > 0:
-            scaffolds = [get_bemis_murcko_scaffold(s) for s in smiles]
             penalized_rewards = []
-            for idx, scaf in enumerate(scaffolds):
-                if scaf in self.bucket_history and self.bucket_history[scaf] > self.bucket_size:
-                    penalized_rewards.append(torch.tensor(0.0+np.finfo(float).eps).unsqueeze(dim=-1))
+            for idx, s in enumerate(smiles):
+                if self.bucket_history.get(self._key(s), 0) > self.bucket_size:
+                    penalized_rewards.append(torch.tensor(0.0 + np.finfo(float).eps).unsqueeze(dim=-1))
                 else:
                     penalized_rewards.append(rewards[idx])
-            return torch.stack(penalized_rewards) #stacked_pen_rew
+            return torch.stack(penalized_rewards)  # stacked_pen_rew
         else:
             return np.array([])
+
+
+def validate_diversity_filter_config(hps, seed_configured):
+    """Fail fast (before training starts) on a degenerate diversity-filter configuration.
+
+    A scaffold-keyed diversity filter combined with a seed / frozen-core initialization is
+    degenerate: every generated molecule shares the seed's Bemis-Murcko scaffold, so the
+    filter truncates virtually all rewards to ~eps and the reward signal collapses (this is
+    the confirmed cause of an empty top-K-by-reward hall of fame). Raise so the run crashes
+    during setup instead of silently producing garbage; no-op for any compatible config.
+    """
+    if (seed_configured and bool(hps.get("diversity_filter", False))
+            and hps.get("diversity_filter_identity", "scaffold") == "scaffold"):
+        raise ValueError(
+            "diversity_filter with BM-scaffold identity is incompatible with a seed / "
+            "frozen-core initialization: every generated molecule shares the seed's Murcko "
+            "scaffold, so the filter collapses all rewards to ~eps. Set "
+            "diversity_filter_identity: canonical_smiles (molecule-level dedup) for seed runs, "
+            "or disable diversity_filter."
+        )
         

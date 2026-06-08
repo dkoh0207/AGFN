@@ -2,7 +2,7 @@ import torch
 from torch.utils.data import DataLoader, IterableDataset
 from rdkit import Chem
 from rdkit.Chem.Scaffolds import MurckoScaffold
-from utils.helpers import DiversityFilter
+from utils.helpers import DiversityFilter, validate_diversity_filter_config
 from utils.top_k_tracker import TopKTracker
 from agfn.backtraj import ReverseFineTune
 from gflownet.envs.mol_building_env import build_frozen_seed_graph
@@ -77,7 +77,14 @@ class FTSampling_Iterator(IterableDataset):
             self.seed_graph = self.ctx.mol_to_graph(scaffold)
         else:
             self.seed_graph = None
-        self.div_fil = DiversityFilter()
+        # Fail fast: a scaffold-keyed diversity filter is degenerate with a seed core (all
+        # molecules share one Murcko scaffold). Crash here -- during build_train_loader, before
+        # the training loop -- rather than collapsing the reward signal at runtime.
+        validate_diversity_filter_config(self.hps, self.seed_graph is not None)
+        self.div_fil = DiversityFilter(
+            identity=self.hps.get('diversity_filter_identity', 'scaffold'),
+            max_unique=self.hps.get('diversity_filter_max_unique', 1_000_000),
+        )
         
         # Then assign the dictionary
         self.task_model_reward_funcs = {
