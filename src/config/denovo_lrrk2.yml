@@ -17,7 +17,17 @@ finetuning:
   sol_high: -4.0            # LogS at/above which the factor is 1
   sol_threshold: -4.0       # used only when sol_mode is hard/clamp
   sol_fail_reward: 1.e-30
-  task_possible_range: [-20,0] 
+  # ChEMBL ring-system rarity gate: floor reward for molecules whose rarest ring system
+  # appears < chembl_ring_min_count times in ChEMBL (useful_rdkit_utils.RingSystemLookup).
+  chembl_ring_constraint: true
+  chembl_ring_mode: "hard"         # hard | soft | clamp
+  chembl_ring_min_count: 5         # min ChEMBL ring-system frequency to pass (hard threshold)
+  chembl_ring_fail_reward: 1.e-30
+  # chembl_ring_low: 1             # (soft mode only) frequency at/below which the factor is 0
+  # chembl_ring_high: 5           # (soft mode only) frequency at/above which the factor is 1
+  chembl_ring_ignore_stereo: false
+  chembl_ring_db_path: !!null      # null -> useful_rdkit_utils default cached chembl_ring_systems.csv
+  task_possible_range: [-20,0]
   target_name: "lrrk2" #"braf" #"fa7" #"parp1" # "jak2" #
   unidock_search_mode: "fast"  # fast | balance | detail
   unidock_num_workers: 1       # >1 enables a multiprocessing pool for ETKDG conformer gen

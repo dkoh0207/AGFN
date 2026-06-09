@@ -5,6 +5,7 @@ from rdkit import Chem
 from agfn.autogluon.bbb import AutoGluonBBBScorer
 from agfn.autogluon.solubility import AutoGluonSolubilityScorer
 from agfn.autogluon.thresholding import apply_gate
+from agfn.ring_system import RingSystemScorer
 from agfn.reward import Reward
 
 class RewardDockFineTune(Reward):
@@ -46,6 +47,25 @@ class RewardDockFineTune(Reward):
         self.last_sol_factors = None
         if self.sol_constraint:
             self.sol_scorer = AutoGluonSolubilityScorer(hps["sol_model_path"])
+
+        # ChEMBL ring-system rarity gate: the scorer emits the rarest ring system's ChEMBL
+        # frequency, so the default mode is "hard" (floor the reward when that frequency is below
+        # chembl_ring_min_count). Acyclic molecules score +inf and always pass.
+        self.chembl_ring_constraint = bool(hps.get("chembl_ring_constraint", False))
+        self.chembl_ring_mode = hps.get("chembl_ring_mode", "hard")
+        self.chembl_ring_min_count = float(hps.get("chembl_ring_min_count", 5))
+        self.chembl_ring_low = _opt_float(hps.get("chembl_ring_low"))
+        self.chembl_ring_high = _opt_float(hps.get("chembl_ring_high"))
+        self.chembl_ring_fail_reward = float(hps.get("chembl_ring_fail_reward", 1e-30))
+        self.chembl_ring_scorer = None
+        self.last_chembl_ring_values = None
+        self.last_chembl_ring_score_mask = None
+        self.last_chembl_ring_pass_mask = None
+        if self.chembl_ring_constraint:
+            self.chembl_ring_scorer = RingSystemScorer(
+                ring_file=(hps.get("chembl_ring_db_path") or None),
+                ignore_stereo=bool(hps.get("chembl_ring_ignore_stereo", False)),
+            )
 
         # Docking runs in-process via Uni-Dock (the unidock_tools API). unidock.py sits next to
         # this package in src/apps/docking/; make it importable regardless of how the driver was
@@ -113,6 +133,24 @@ class RewardDockFineTune(Reward):
             self.last_sol_score_mask = None
             self.last_sol_pass_mask = None
             self.last_sol_factors = None
+
+        if getattr(self, "chembl_ring_constraint", False):
+            values, score_mask = self._score_constraint(self.chembl_ring_scorer, smiles_list)
+            task_rewards, _factors, pass_mask = apply_gate(
+                task_rewards, values, score_mask,
+                mode=getattr(self, "chembl_ring_mode", "hard"),
+                threshold=getattr(self, "chembl_ring_min_count", 5),
+                low=getattr(self, "chembl_ring_low", None),
+                high=getattr(self, "chembl_ring_high", None),
+                fail_reward=self.chembl_ring_fail_reward,
+            )
+            self.last_chembl_ring_values = values
+            self.last_chembl_ring_score_mask = score_mask
+            self.last_chembl_ring_pass_mask = pass_mask
+        else:
+            self.last_chembl_ring_values = None
+            self.last_chembl_ring_score_mask = None
+            self.last_chembl_ring_pass_mask = None
 
         flat_rewards_task = np.expand_dims(task_rewards, axis=1)
         return flat_rewards_task, true_task_score
