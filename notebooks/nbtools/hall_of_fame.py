@@ -195,6 +195,43 @@ def plot_topk_curves(paths):
     plt.show()
 
 
+def plot_bbb_solubility(metrics_csv, smooth=20):
+    """Plot running **BBB score** and **solubility LogS** vs ``Train_iter`` from ``metrics.csv``.
+
+    Two side-by-side panels (BBB and LogS sit on very different scales, so they don't share a
+    y-axis): each overlays the raw per-step trace (faint) with a rolling mean over ``smooth``
+    steps. A panel whose column is absent is annotated and left blank, so this is safe across
+    configs. Returns the DataFrame, or None if the file is missing.
+    """
+    if not Path(metrics_csv).exists():
+        print(f"metrics.csv not found at {metrics_csv} — run training first.")
+        return None
+    df = pd.read_csv(metrics_csv)
+    df.columns = [c.strip() for c in df.columns]
+    x = df["Train_iter"] if "Train_iter" in df.columns else df.index
+
+    panels = [
+        ("Average BBB score",       "Average BBB score",       "BBB score  (higher = more permeant)",  "#0D4A70"),
+        ("Average solubility LogS", "Average solubility LogS", "Solubility LogS  (higher = more soluble)", "#FF1F5B"),
+    ]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    for ax, (col, title, ylabel, color) in zip(axes, panels):
+        if col not in df.columns:
+            ax.text(0.5, 0.5, f"no '{col}' column", ha="center", va="center")
+            ax.set_title(title)
+            ax.axis("off")
+            continue
+        ax.plot(x, df[col], c=color, alpha=0.15)
+        ax.plot(x, df[col].rolling(smooth, min_periods=1).mean(), c=color, lw=1.5)
+        ax.set_title(title)
+        ax.set_xlabel("Train_iter")
+        ax.set_ylabel(ylabel)
+        ax.grid(alpha=0.3)
+    fig.tight_layout()
+    plt.show()
+    return df
+
+
 def load_hall_of_fame(sdf_path, n=None):
     """Return a list of ``(mol_with_3D_pose, props_dict)``, in file (rank) order."""
     if not Path(sdf_path).exists():
