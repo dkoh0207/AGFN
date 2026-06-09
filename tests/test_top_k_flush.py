@@ -114,6 +114,61 @@ def test_generator_exit_reaches_finally_once():
     print("PASS test_generator_exit_reaches_finally_once")
 
 
+def test_dedup_running_mean_and_roundtrip():
+    # The same molecule sampled 3x (re-docked, so the scores drift) must collapse to ONE entry
+    # whose reward/affinity are the running means; a second molecule seen once stays distinct.
+    t = TopKTracker(ks=(10, 100))
+    for r, a, it in [(1.0, -1.0, 5), (2.0, -2.0, 7), (3.0, -3.0, 9)]:
+        t.add(smiles="CCO", reward=r, affinity=a, iteration=it)
+    t.add(smiles="c1ccccc1", reward=0.5, affinity=-0.5, iteration=6)
+
+    rew = t.snapshot()["top_by_reward"][100]
+    assert len(rew) == 2, f"expected 2 unique mols, got {len(rew)}: {rew}"
+    cco = next(e for e in rew if e[0] == "CCO")  # (smiles, reward_mean, aff_mean, first_iter, count)
+    assert abs(cco[1] - 2.0) < 1e-9, cco          # mean(1,2,3)
+    assert abs(cco[2] - (-2.0)) < 1e-9, cco        # mean(-1,-2,-3)
+    assert cco[3] == 5, cco                         # discovery (first-seen) iteration
+    assert cco[4] == 3, cco                         # sample count
+
+    # Round-trip: save -> the CSV has no duplicate SMILES -> load resumes the exact means + counts.
+    with tempfile.TemporaryDirectory() as d:
+        t.save(d)
+        with open(os.path.join(d, REWARD_CSV), newline="") as f:
+            smis = [row["smiles"] for row in csv.DictReader(f)]
+        assert len(smis) == len(set(smis)) == 2, f"CSV not unique: {smis}"
+        t2 = TopKTracker(ks=(10, 100))
+        t2.load(d)
+    cco2 = next(e for e in t2.snapshot()["top_by_reward"][100] if e[0] == "CCO")
+    assert abs(cco2[1] - 2.0) < 1e-9 and abs(cco2[2] - (-2.0)) < 1e-9 and cco2[4] == 3, cco2
+
+    # Resuming and sampling again continues the cumulative mean rather than resetting the count.
+    t2.add(smiles="CCO", reward=6.0, affinity=-6.0, iteration=20)
+    cco3 = next(e for e in t2.snapshot()["top_by_reward"][100] if e[0] == "CCO")
+    assert cco3[4] == 4, cco3                                  # 3 restored + 1 new
+    assert abs(cco3[1] - (1 + 2 + 3 + 6) / 4) < 1e-9, cco3      # = 3.0
+    print("PASS test_dedup_running_mean_and_roundtrip")
+
+
+def test_load_pre_count_csv_collapses_duplicates():
+    # Resume path for runs written before this change: the old CSV has no `count` column and one
+    # row per observation, so the same molecule appears on multiple rows (the bug being fixed).
+    # load() must replay those rows and collapse them into the new running mean.
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, REWARD_CSV), "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(("rank", "smiles", "reward", "affinity", "iteration"))  # pre-count header
+            w.writerow((1, "CCO", 3.0, -3.0, 9))
+            w.writerow((2, "CCO", 1.0, -1.0, 5))
+            w.writerow((3, "c1ccccc1", 0.5, -0.5, 6))
+        t = TopKTracker(ks=(10, 100))
+        t.load(d)
+    rew = t.snapshot()["top_by_reward"][100]
+    assert len(rew) == 2, f"old duplicate rows should collapse to 2 mols, got {rew}"
+    cco = next(e for e in rew if e[0] == "CCO")
+    assert abs(cco[1] - 2.0) < 1e-9 and abs(cco[2] - (-2.0)) < 1e-9 and cco[4] == 2, cco
+    print("PASS test_load_pre_count_csv_collapses_duplicates")
+
+
 def test_averages_means_and_nan():
     import math
 
@@ -142,5 +197,7 @@ if __name__ == "__main__":
     test_flush_helper_writes_all_entries()
     test_final_flush_on_teardown()
     test_generator_exit_reaches_finally_once()
+    test_dedup_running_mean_and_roundtrip()
+    test_load_pre_count_csv_collapses_duplicates()
     test_averages_means_and_nan()
     print("ALL PASS")

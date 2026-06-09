@@ -256,16 +256,18 @@ class UniDockGPU:
         """Write top molecules + their cached docked poses to an SDF.
 
         ``entries`` is a TopKTracker snapshot bucket: a list of ``(smiles, reward, affinity,
-        iteration)`` already in rank order. For each entry with a cached pose, write the 3D pose
-        with ``smiles``/``docking_score``/``reward``/``iteration``/``rank`` as SD tags. Entries
-        whose pose isn't cached are skipped. Returns the number of molecules written.
+        iteration, count)`` already in rank order, one row per unique molecule. ``reward``/
+        ``affinity`` are the running means and ``count`` is how many times the molecule was sampled.
+        For each entry with a cached pose, write the 3D pose with ``smiles``/``docking_score``/
+        ``reward``/``iteration``/``n_obs``/``rank`` as SD tags. Entries whose pose isn't cached are
+        skipped. Returns the number of molecules written.
         """
         from pathlib import Path
 
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         written = 0
         with Chem.SDWriter(str(path)) as w:
-            for rank, (smiles, reward, affinity, iteration) in enumerate(entries, start=1):
+            for rank, (smiles, reward, affinity, iteration, count) in enumerate(entries, start=1):
                 cached = self.pose_index.get(smiles)
                 if cached is None:
                     continue
@@ -278,6 +280,7 @@ class UniDockGPU:
                 mol.SetProp("docking_score", f"{affinity}")
                 mol.SetProp("reward", f"{reward}")
                 mol.SetProp("iteration", str(iteration))
+                mol.SetProp("n_obs", str(count))
                 w.write(mol)
                 written += 1
         return written
